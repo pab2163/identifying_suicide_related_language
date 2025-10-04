@@ -1,0 +1,476 @@
+---
+title: 'step 1: head_to_head'
+author: "Paul Alexander Bloom"
+date: "2025-04-30"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(caret)
+library(ggplot2)
+library(stringr)
+library(cowplot)
+
+
+source('helper_functions.R')
+```
+
+# Load MAPS validation dataframe
+```{r}
+load('../model_outputs_step1/data_for_maps_validation.rda')
+```
+
+
+# PED-SI Validation
+```{r}
+load('../model_outputs_step1/data_for_washu_validation.rda')
+
+
+# Check & prep data
+length(unique(washu_for_validation$subjectID))
+
+
+sum(washu_for_validation$SI, na.rm = TRUE)
+
+counts = washu_for_validation %>%
+  group_by(filepath) %>%
+  summarise(n= n(),
+            total_si = sum(SI),
+            si_rate = total_si/n)
+
+washu_for_validation = mutate(washu_for_validation, 
+                  `Youth SRL+`=ifelse(youth_suicide_lexicon_tokens ==1 |
+                                       youth_suicide_lexicon_celeb ==1 |
+                                       emoji_flag ==1 |
+                                       youth_suicide_lexicon_pairs ==1, 1, 0),
+                  `Youth SRL`=ifelse(youth_suicide_lexicon_tokens ==1 |
+                                       youth_suicide_lexicon_pairs ==1, 1, 0),
+                  )
+
+washu_falseneg = dplyr::filter(washu_for_validation, 
+                               SI==1,
+                               `Youth SRL+`==0)
+
+
+washu_true_positives_n = sum(washu_for_validation$SI)
+washu_true_base_rate = round(100* sum(washu_for_validation$SI) / nrow(washu_for_validation), 2)
+```
+
+
+```{r}
+performance_metrics_washu = bootstrap_evaluate_predictions(
+  full_df = washu_for_validation,
+  reference_col = "SI",
+  prediction_cols = c('Youth SRL', 'Youth SRL+', 'suicide_lexicon_swaminathan_2023', 'suicide_lexicon_swaminathan_2023_thoughts_methods_only',
+                      'low_srl_flag', 'low_srl_flag_count_only'),
+  positive_class = '1',
+  n_iterations = 100
+)
+
+```
+
+```{r}
+
+performance_metrics_summary_washu <- performance_metrics_washu %>%
+  pivot_longer(cols = c('Precision', 'Recall', 'F1', 'Sensitivity', 'Specificity', 'Balanced_Accuracy'), 
+               names_to = "Metric", 
+               values_to = "Value") %>%
+  group_by(PredictionColumn, Metric) %>%
+  summarise(mean = mean(Value),
+            lwr95 = quantile(Value, .025),
+            upr95 = quantile(Value, .975))
+
+#washu_base_rate = sum(washu_df$SI) / nrow(washu_df)
+
+
+performance_metrics_summary_washu = mutate(performance_metrics_summary_washu, 
+                                           PredictionColumn = dplyr::recode(PredictionColumn,
+                                          'low_srl_flag'='Low 2024 Lexicon (Exact+Similarity)',
+                                         'low_srl_flag_count_only'='Low 2024 Lexicon (Exact)',
+                                          'Youth SRL'='Youth Suicide Lexicon',    
+                                          'Youth SRL+'='Youth Suicide Lexicon (+Emojis, Celebrity/Historical Suicides)', 
+                                         'suicide_lexicon_swaminathan_2023'='Swaminathan 2023 Lexicon (Full)',
+                                         'suicide_lexicon_swaminathan_2023_thoughts_methods_only'='Swaminathan 2023 Lexicon (Suicide Thoughts/Methods)')
+                                         )
+
+f1_order_washu <- performance_metrics_summary_washu %>%
+  dplyr::filter(Metric =='F1') %>%
+  arrange(desc(mean)) %>%
+  pull(PredictionColumn)
+
+acc_order_washu <- performance_metrics_summary_washu %>%
+  dplyr::filter(Metric =='Balanced_Accuracy') %>%
+  arrange(desc(mean)) %>%
+  pull(PredictionColumn)
+
+
+performance_metrics_summary_washu = mutate(performance_metrics_summary_washu, 
+                                          is_youth_srl = ifelse(grepl('Youth', PredictionColumn), 'y', 'n'))
+
+performance_metrics_summary_washu_F1 =performance_metrics_summary_washu
+performance_metrics_summary_washu_acc = performance_metrics_summary_washu
+
+performance_metrics_summary_washu_F1$PredictionColumn = factor(performance_metrics_summary_washu$PredictionColumn, levels = f1_order_washu)
+
+performance_metrics_summary_washu_acc$PredictionColumn = factor(performance_metrics_summary_washu$PredictionColumn, levels = acc_order_washu)
+
+
+
+prelim_step1_fig_washu = performance_metrics_summary_washu_F1 %>%
+  dplyr::filter(Metric %in% c('F1', 'Recall', 'Precision')) %>%
+  ggplot(aes(y = PredictionColumn, x = mean, color = is_youth_srl)) +
+  geom_point() +
+  geom_errorbarh(aes(xmin = lwr95, xmax = upr95), height = 0.1) +
+  geom_line(aes(group = PredictionColumn)) +
+  facet_grid(cols = vars(Metric)) +
+  theme_bw() +
+  labs(x = "Score", y=NULL, 
+       title = '\nPED-SI Data (Younger Youth with Lower Clinical Acuity)',
+       subtitle = paste0("N=", nrow(washu_for_validation), ' labeled text entries with ', 
+                         washu_true_positives_n, ' true positives (Base rate ',
+                         washu_true_base_rate, '%)')) +
+  theme(legend.position = 'none') +
+  xlim(0, 1) + 
+  theme(plot.background = element_rect(color = "black")) +
+  scale_color_viridis_d(begin = 0.2, end = 0.6)
+
+
+step1_fig_pedsi_small = performance_metrics_summary_washu_F1 %>%
+  dplyr::filter(Metric %in% c('F1', 'Recall', 'Precision'),
+                PredictionColumn %in% c('Youth Suicide Lexicon', 'Low 2024 Lexicon (Exact)', 'Swaminathan 2023 Lexicon (Suicide Thoughts/Methods)')) %>%
+  mutate(PredictionColumn = dplyr::recode(PredictionColumn,
+                                         'Low 2024 Lexicon (Exact)'='Low 2024 Lexicon',
+                                         'Swaminathan 2023 Lexicon (Suicide Thoughts/Methods)'='Swaminathan 2023 Lexicon'),
+         Metric = dplyr::recode(Metric, 'Recall'='Recall (Sensitivity)', 
+                                          'Precision'='Precision (Positive Predictive Value)')) %>%
+  ggplot(aes(y = PredictionColumn, x = mean, color = is_youth_srl)) +
+  geom_point() +
+  geom_errorbarh(aes(xmin = lwr95, xmax = upr95), height = 0.1) +
+  geom_line(aes(group = PredictionColumn)) +
+  facet_grid(cols = vars(Metric)) +
+  theme_bw() +
+  labs(x = "Score", y=NULL, 
+       title = '\nPEDSI Data (Younger Youth with Lower Clinical Acuity)',
+       subtitle = paste0("N=", nrow(washu_for_validation), ' labeled text entries with ', 
+                         washu_true_positives_n, ' true positives (Base rate ',
+                         washu_true_base_rate, '%)')) +
+  theme(legend.position = 'none',
+        text=element_text(face='bold')) +
+  xlim(0, 1) + 
+  theme(plot.background = element_rect(color = "black")) +
+  scale_color_viridis_d(begin = 0.2, end = 0.6)
+
+
+prelim_step1_fig_washu_v2 = performance_metrics_summary_washu_acc %>%
+  dplyr::filter(Metric %in% c('Sensitivity', 'Specificity', 'Balanced_Accuracy')) %>%
+  ggplot(aes(y = PredictionColumn, x = mean, color = is_youth_srl)) +
+  geom_point() +
+  geom_errorbarh(aes(xmin = lwr95, xmax = upr95), height = 0.1) +
+  geom_line(aes(group = PredictionColumn)) +
+  facet_grid(cols = vars(Metric)) +
+  theme_bw() +
+  labs(x = "Score", y=NULL, 
+       title = '\nValidation Set 2: WashU Data',
+       subtitle = paste0("N=", nrow(washu_for_validation), ' labeled text entries with ', 
+                         washu_true_positives_n, ' true positives (Base rate ',
+                         washu_true_base_rate, '%)')) +
+  theme(legend.position = 'none') +
+  xlim(0, 1) + 
+  theme(plot.background = element_rect(color = "black")) +
+  scale_color_viridis_d(begin = 0.2, end = 0.6)
+
+ggsave(prelim_step1_fig_washu, file = '../figures/in_progress/prelim_head_to_head_washu.png', width = 11, height = 3)
+
+write.csv(performance_metrics_summary_washu, file = '../model_outputs_step1/washu_validation_summary.csv')
+```
+
+
+
+```{r}
+performance_metrics_maps = bootstrap_evaluate_predictions(
+  full_df = maps_validation_df,
+  reference_col = "suicide_related",
+  prediction_cols = c('lexicon_emoji_celeb_flag', 
+                                                                'lexicon_only_flag', 
+                                                                'lexicon_emoji_celeb_flag_nospellcheck',
+                                                                'lexicon_only_flag_nospellcheck',
+                                                                'swaminathan_full_flag',
+                                                                'swaminathan_thoughtsmethods_flag',
+                                                                'low_srl_flag', 
+                                                                'low_srl_flag_count_only',
+                                                                'low_srl_flag_combined', 
+                                                                'low_srl_flag_count_only_combined',
+                                                                'low_srl_allconstructs_combined',
+                                                                'is_suicide_topic',
+                                                                'is_suicide_topic_manual'),
+  positive_class = '1',
+  n_iterations = 100)
+```
+
+```{r}
+performance_metrics_maps_all = performance_metrics_maps %>% mutate(PredictionColumn = dplyr::recode(PredictionColumn,
+                                         'low_srl_flag'='Low 2024 Lexicon (Exact+Similarity)',
+                                         'low_srl_flag_count_only'='Low 2024 Lexicon (Exact)',
+                                         'low_srl_flag_combined'='Low 2024 Lexicon (Exact+Similarity+Spellcheck)',
+                                         'low_srl_flag_count_only_combined'='Low 2024 Lexicon (Exact+Spellcheck)',
+                                         'lexicon_only_flag'='Youth Suicide Lexicon',
+                                         'low_srl_allconstructs_combined'='Low 2024 Lexicon (Exact: All Constructs)',
+                                         'lexicon_only_flag_nospellcheck'='Youth Suicide Lexicon (No Spell-Correction)',
+                                         'lexicon_emoji_celeb_flag_nospellcheck'='Youth SRL (Youth SRL(+Emojis, Celebrity Suicides)',
+                                         'lexicon_emoji_celeb_flag'='Youth SRL(+Emojis, Celebrity Suicides, Spelling Correction)',
+                                         'swaminathan_full_flag'='Swaminathan 2023 Lexicon (Full)',
+                                         'swaminathan_thoughtsmethods_flag'='Swaminathan 2023 Lexicon (Suicide Thoughts/Methods)',
+                                         'is_suicide_topic'='Suicide Topic Model',
+                                         'is_suicide_topic_manual'='Suicide Topic Model (Manual)')
+                                         )
+# only spellchecked for main figure
+performance_metrics_maps = performance_metrics_maps %>% mutate(PredictionColumn = dplyr::recode(PredictionColumn,
+                                         'low_srl_flag_combined'='Low 2024 Lexicon (Exact+Similarity)',
+                                         'low_srl_flag_count_only_combined'='Low 2024 Lexicon (Exact)',
+                                         'lexicon_only_flag'='Youth Suicide Lexicon',
+                                         'lexicon_emoji_celeb_flag'='Youth Suicide Lexicon (+Emojis, Celebrity/Historical Suicides)',
+                                         'swaminathan_full_flag'='Swaminathan 2023 Lexicon (Full)',
+                                         'swaminathan_thoughtsmethods_flag'='Swaminathan 2023 Lexicon (Suicide Thoughts/Methods)',
+                                         'is_suicide_topic'='Suicide Topic Model',
+                                         'is_suicide_topic_manual'='Suicide Topic Model (Manual)')
+                                         ) %>%
+  dplyr::filter(!grepl('_', PredictionColumn))
+
+
+performance_metrics_summary_maps <- performance_metrics_maps %>%
+  pivot_longer(cols = c('Precision', 'Recall', 'F1', 'Sensitivity', 'Specificity', 'Balanced_Accuracy'), 
+               names_to = "Metric", 
+               values_to = "Value") %>%
+  group_by(PredictionColumn, Metric) %>%
+  summarise(mean = mean(Value),
+            lwr95 = quantile(Value, .025),
+            upr95 = quantile(Value, .975))
+
+f1_order_maps <- performance_metrics_summary_maps %>%
+  dplyr::filter(Metric =='F1') %>%
+  arrange(desc(mean)) %>%
+  pull(PredictionColumn)
+
+acc_order_maps <- performance_metrics_summary_maps %>%
+  dplyr::filter(Metric =='Balanced_Accuracy') %>%
+  arrange(desc(mean)) %>%
+  pull(PredictionColumn)
+
+
+performance_metrics_summary_maps = mutate(performance_metrics_summary_maps, 
+                                          is_youth_srl = ifelse(grepl('Youth', PredictionColumn), 'y', 'n'))
+
+performance_metrics_summary_maps_F1 =performance_metrics_summary_maps
+performance_metrics_summary_maps_acc = performance_metrics_summary_maps
+
+performance_metrics_summary_maps_F1$PredictionColumn = factor(performance_metrics_summary_maps$PredictionColumn, levels = f1_order_maps)
+
+performance_metrics_summary_maps_acc$PredictionColumn = factor(performance_metrics_summary_maps$PredictionColumn, levels = acc_order_maps)
+
+maps_true_positives_n = sum(maps_validation_df$suicide_related)
+maps_true_base_rate = round(100* sum(maps_validation_df$suicide_related) / nrow(maps_validation_df), 2)
+
+
+# Step 2: Make PredictionColumn a factor with desired order
+prelim_step1_fig_maps = performance_metrics_summary_maps_F1 %>%
+  dplyr::filter(Metric %in% c('F1', 'Recall', 'Precision')) %>%
+  ggplot(aes(y = PredictionColumn, x = mean, color = is_youth_srl)) +
+  geom_point() +
+  geom_errorbarh(aes(xmin = lwr95, xmax = upr95), height = 0.1) +
+  geom_line(aes(group = PredictionColumn)) +
+  facet_grid(cols = vars(Metric)) +
+  theme_bw() +
+  labs(x = "Score", y=NULL, 
+       title = '\nMAPS Data (Higher-Risk Adolescents)',
+       subtitle = paste0("N=", nrow(maps_validation_df), ' labeled text entries with ', 
+                         maps_true_positives_n, ' true positives (Base rate ',
+                         maps_true_base_rate, '%)')) +
+  theme(legend.position = 'none') +
+  xlim(0,1) + 
+  theme(plot.background = element_rect(color = "black")) +
+  scale_color_viridis_d(begin = 0.2, end = 0.6)
+
+step1_fig_maps_small = performance_metrics_summary_maps_F1 %>%
+  dplyr::filter(Metric %in% c('F1', 'Recall', 'Precision'),
+                PredictionColumn %in% c('Youth Suicide Lexicon', 'Low 2024 Lexicon (Exact)', 'Swaminathan 2023 Lexicon (Suicide Thoughts/Methods)')) %>%
+    mutate(PredictionColumn = dplyr::recode(PredictionColumn,
+                                         'Low 2024 Lexicon (Exact)'='Low 2024 Lexicon',
+                                         'Swaminathan 2023 Lexicon (Suicide Thoughts/Methods)'='Swaminathan 2023 Lexicon'),
+           Metric = dplyr::recode(Metric, 'Recall'='Recall (Sensitivity)', 
+                                          'Precision'='Precision (Positive Predictive Value)')) %>%
+  ggplot(aes(y = PredictionColumn, x = mean, color = is_youth_srl)) +
+  geom_point() +
+  geom_errorbarh(aes(xmin = lwr95, xmax = upr95), height = 0.1) +
+  geom_line(aes(group = PredictionColumn)) +
+  facet_grid(cols = vars(Metric)) +
+  theme_bw() +
+  labs(x = "Score", y=NULL, 
+       title = '\nMAPS Data (Higher-Risk Adolescents)',
+       subtitle = paste0("N=", nrow(maps_validation_df), ' labeled text entries with ', 
+                         maps_true_positives_n, ' true positives (Base rate ',
+                         maps_true_base_rate, '%)')) +
+  theme(legend.position = 'none',
+       text=element_text(face = 'bold')) +
+  xlim(0,1) + 
+  theme(plot.background = element_rect(color = "black")) +
+  scale_color_viridis_d(begin = 0.2, end = 0.6)
+
+
+
+prelim_step1_fig_maps_v2 = performance_metrics_summary_maps_acc %>%
+  dplyr::filter(Metric %in% c('Balanced_Accuracy', 'Sensitivity', 'Specificity')) %>%
+  ggplot(aes(y = PredictionColumn, x = mean, color = is_youth_srl)) +
+  geom_point() +
+  geom_errorbarh(aes(xmin = lwr95, xmax = upr95), height = 0.1) +
+  geom_line(aes(group = PredictionColumn)) +
+  facet_grid(cols = vars(Metric)) +
+  theme_bw() +
+  labs(x = "Score", y=NULL, 
+       title = '\nValidation Set 1: MAPS Data',
+       subtitle = paste0("N=", nrow(maps_validation_df), ' labeled text entries with ', 
+                         maps_true_positives_n, ' true positives (Base rate ',
+                         maps_true_base_rate, '%)')) +
+  theme(legend.position = 'none') +
+  xlim(0,1) + 
+  theme(plot.background = element_rect(color = "black")) +
+  scale_color_viridis_d(begin = 0.2, end = 0.6)
+
+
+ggsave(prelim_step1_fig_maps, file = '../figures/in_progress/prelim_head_to_head.png', width = 11, height = 3)
+
+
+write.csv(performance_metrics_summary_maps, file = '../model_outputs_step1/maps_validation_summary.csv')
+
+
+```
+
+# Tables for supplement
+```{r}
+performance_table_maps = mutate(performance_metrics_summary_maps, 
+                                outcome = paste0(
+                                  format(round(mean, digits = 2), nsmall=2),
+                                  ' [',
+                                  format(round(lwr95, digits = 2), nsmall=2),
+                                  ', ',
+                                  format(round(upr95, digits = 2), nsmall=2),
+                                  ']'))
+
+performance_table_washu = mutate(performance_metrics_summary_washu, 
+                                outcome = paste0(
+                                  format(round(mean, digits = 2), nsmall=2),
+                                  ' [',
+                                  format(round(lwr95, digits = 2), nsmall=2),
+                                  ', ',
+                                  format(round(upr95, digits = 2), nsmall=2),
+                                  ']'))
+
+performance_table_washu = performance_table_washu %>%
+  dplyr::select(PredictionColumn, Metric, outcome) %>%
+  pivot_wider(names_from = 'Metric', values_from = 'outcome', id_cols = 'PredictionColumn') %>%
+  mutate(dataset = 'PEDSI')
+
+
+performance_table_maps = performance_table_maps %>%
+  dplyr::select(PredictionColumn, Metric, outcome) %>%
+  pivot_wider(names_from = 'Metric', values_from = 'outcome', id_cols = 'PredictionColumn') %>%
+  mutate(dataset = 'MAPS')
+
+
+model_supplemental_table=rbind(performance_table_maps, performance_table_washu) %>% dplyr::select(-'Sensitivity')
+write.csv(model_supplemental_table, file = '../model_outputs_step1/model_stats_supplemental_table_part1.csv', row.names = FALSE)
+
+```
+
+```{r}
+# larger plot with more models for supplement
+validation_plot = cowplot::plot_grid(prelim_step1_fig_maps, prelim_step1_fig_washu,
+                                     nrow = 2, align = 'v',
+                                     labels = 'Model Performance in Flagging Youth Suicidal Language - Additional Models',
+                                     hjust = -.01)
+
+cowplot::save_plot(validation_plot, filename = '../figures/supplemental/step1_validation_moremodels.png',
+                   base_height = 8, base_width = 9)
+
+
+# smaller plot with fewer models for main figure clarity
+validation_plot_small = cowplot::plot_grid(step1_fig_maps_small, step1_fig_pedsi_small,
+                                     nrow = 2, align = 'v',
+                                     labels = 'Model Performance in Flagging Youth Suicidal Language',
+                                     hjust = -.01)
+
+cowplot::save_plot(validation_plot_small, filename = '../figures/main/step1_validation_plot.png',
+                   base_height = 6, base_width = 9)
+```
+
+
+```{r}
+validation_plot_v2 = cowplot::plot_grid(prelim_step1_fig_maps_v2, prelim_step1_fig_washu_v2,
+                                     nrow = 2, align = 'v',
+                                     labels = 'Model Performance in Flagging Youth Suicidal Language',
+                                     hjust = -.01)
+
+cowplot::save_plot(validation_plot_v2, filename = '../figures/in_progress/prelim_validation_v2.png',
+                   base_height = 8, base_width = 9)
+
+```
+
+# Does spellcheck change performance? 
+
+```{r}
+spellcheck = dplyr::filter(performance_metrics_maps_all, PredictionColumn %in% c('Youth Suicide Lexicon', 'Youth Suicide Lexicon (No Spell-Correction)'))  
+
+
+spellcheck_stats = spellcheck %>% dplyr::select(BootstrapIteration, PredictionColumn, F1) %>%
+  pivot_wider(id_cols = c(BootstrapIteration), names_from = PredictionColumn, values_from= F1) %>%
+  mutate(spellcheck_worse= `Youth Suicide Lexicon (No Spell-Correction)` - `Youth Suicide Lexicon`) 
+
+
+
+sum(spellcheck_stats$spellcheck_worse > 0) / nrow(spellcheck_stats)
+
+mean(spellcheck_stats$spellcheck_worse)
+
+spellcheck = spellcheck %>%
+  mutate(PredictionColumn = dplyr::recode(PredictionColumn,
+                                          'Youth Suicide Lexicon'='Youth Suicide Lexicon\nWith Spellcheck',
+                                          'Youth Suicide Lexicon (No Spell-Correction)'='Youth Suicide Lexicon\nWithout Spellcheck'))
+
+
+
+step1_fig_spellcheck = spellcheck %>%
+  pivot_longer(cols = c('Precision', 'Recall', 'F1', 'Sensitivity', 'Specificity', 'Balanced_Accuracy'), 
+               names_to = "Metric", 
+               values_to = "Value") %>%
+  group_by(PredictionColumn, Metric) %>%
+  summarise(mean = mean(Value),
+            lwr95 = quantile(Value, .025),
+            upr95 = quantile(Value, .975)) %>%
+  dplyr::filter(Metric %in% c('F1', 'Recall', 'Precision')) %>%
+  mutate(
+           Metric = dplyr::recode(Metric, 'Recall'='Recall (Sensitivity)', 
+                                          'Precision'='Precision (Positive Predictive Value)')) %>%
+  ggplot(aes(y = PredictionColumn, x = mean, color)) +
+  geom_point() +
+  geom_errorbarh(aes(xmin = lwr95, xmax = upr95), height = 0.1) +
+  geom_line(aes(group = PredictionColumn)) +
+  facet_grid(cols = vars(Metric)) +
+  theme_bw() +
+  labs(x = "Score", y=NULL, 
+       title = '\nMAPS Data (Higher-Risk Adolescents)',
+       subtitle = paste0("N=", nrow(maps_validation_df), ' labeled text entries with ', 
+                         maps_true_positives_n, ' true positives (Base rate ',
+                         maps_true_base_rate, '%)')) +
+  theme(legend.position = 'none',
+       text=element_text(face = 'bold')) +
+  xlim(0,1) + 
+  theme(plot.background = element_rect(color = "black")) +
+  scale_color_viridis_d(begin = 0.2, end = 0.6)
+
+ggsave(step1_fig_spellcheck, file = '../figures/supplemental/step1_validation_spellcheck.png',
+       height = 3, width = 9)
+```
