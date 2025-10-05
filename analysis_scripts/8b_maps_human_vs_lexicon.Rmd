@@ -1,0 +1,214 @@
+---
+title: "Bootstrap Odds Ratios for Human vs. Lexicon Codings"
+author: "Paul Alexander Bloom"
+date: "2025-05-13"
+output: html_document
+---
+
+
+To compare whether lexicon codings alone vs human coding (e.g., true positives) are more strongly associated with STB history/SI
+Bootstrap, run models, compare odds ratios for each bootstrap iteration
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(purrr)
+library(glmmTMB)
+library(emmeans)
+library(lubridate)
+library(ggplot2)
+library(ggtext)
+library(broom.mixed)
+source('helper_functions.R')
+options(scipen = 999)
+```
+
+# Load and clean data
+```{r}
+maps_selfreport = read_csv('/Volumes/AUERBACHLAB/columbia/MAPS_Data/Analysis/Wrangling/Self_Report/data/selfreport_07.11.2024.csv') %>% 
+  dplyr::select(ID, age, GROUP, Control, SSI19_i) 
+
+load('../data_stage2/maps_full_codings_spellchecked.rda')
+
+
+
+maps = mutate(final_spellcheck_codings, flag_bin = flag_final_no_emojis)
+rm(final_spellcheck_codings)
+gc()
+
+maps = maps %>%
+  distinct(text_clean, tm_message_start, tm_message_end, id_app, .keep_all = TRUE)
+
+
+
+maps = left_join(maps %>% dplyr::select(ID=id, everything()), maps_selfreport, by = 'ID')
+
+by_id_summary = maps %>%
+  group_by(ID)%>%
+  summarise(total_message = n(),
+            total_flagged = sum(flag_bin==1),
+            proportion_flagged = total_flagged/total_message)
+
+maps = maps %>%
+  group_by(ID)%>%
+  mutate(total_message = n()) %>%
+  ungroup()
+
+
+
+# remove participants with fewer than 1000 entries
+maps = dplyr::filter(maps, total_message >= 1000)
+gc()
+
+
+maps = mutate(maps, lifetime_stb = ifelse(Control==0, 1, 0),
+              suicide_related = ifelse(is.na(suicide_related), 0, suicide_related))
+
+
+sum(maps$suicide_related, na.rm = TRUE)
+```
+
+# Function to run a single bootstrap
+
+Note: participants are resampled with replacement, with IDs relabled such that all IDs are unique for duplicate resamples
+```{r}
+one_bootstrap = function(seed, df){
+  set.seed(seed)
+
+  # get bootstrap sample using custom sample_participants() function
+  boot_sample = sample_participants(df)
+  boot_sample = mutate(boot_sample, ID = as.character(ID))
+  print(length(unique(boot_sample$ID)))
+  
+
+  # SI
+  si_z_lexicon = glmmTMB(
+    flag_bin ~ SSI19_i + age + (1 | ID),
+    family = binomial(link = "logit"),
+    data = dplyr::select(boot_sample, ID, age, SSI19_i, flag_bin) %>% na.omit() %>% mutate(SSI19_i = scale(SSI19_i)))
+  
+  si_z_human = glmmTMB(
+    suicide_related ~ SSI19_i + age + (1 | ID),
+    family = binomial(link = "logit"),
+    data = dplyr::select(maps, ID, age, SSI19_i, suicide_related) %>% na.omit() %>% mutate(SSI19_i = scale(SSI19_i)))
+  
+  or_si_lexicon = broom.mixed::tidy(si_z_lexicon, conf.int=TRUE, exponentiate=TRUE) %>% 
+    mutate(coding = 'lexicon')
+  or_si_human = broom.mixed::tidy(si_z_human, conf.int=TRUE, exponentiate=TRUE) %>% 
+    mutate(coding = 'human')
+  
+  # STB
+  stb_lexicon = glmmTMB(
+    flag_bin ~ lifetime_stb + age + (1 | ID),
+    family = binomial(link = "logit"),
+    data = dplyr::select(boot_sample, ID, age, lifetime_stb, flag_bin) %>% na.omit())
+  
+  stb_z_human = glmmTMB(
+    suicide_related ~ lifetime_stb + age + (1 | ID),
+    family = binomial(link = "logit"),
+    data = dplyr::select(maps, ID, age, lifetime_stb, suicide_related) %>% na.omit())
+  
+  or_stb_lexicon = broom.mixed::tidy(stb_lexicon, conf.int=TRUE, exponentiate=TRUE) %>% 
+    mutate(coding = 'lexicon')
+  or_stb_human = broom.mixed::tidy(stb_z_human, conf.int=TRUE, exponentiate=TRUE) %>% 
+    mutate(coding = 'human')
+  
+  or_table = rbind(or_si_lexicon, or_si_human, or_stb_lexicon, or_stb_human) %>%
+    mutate(iter = seed)
+  
+  
+  return(or_table)
+
+}
+```
+
+Run iterations of bootstrap
+
+```{r}
+n_iter = 1000
+
+start_time = Sys.time()
+for (i in 1:n_iter){
+  print(i)
+  boot_tmp=one_bootstrap(seed=i, df = maps)
+  if(i == 1){
+    boot_output = boot_tmp
+    }
+  else{
+      boot_output = rbind(boot_output, boot_tmp)
+  }
+  end_time = Sys.time()
+  print(end_time - start_time)
+  time_elapsed = end_time - start_time  
+  save(boot_output, time_elapsed, file = '../model_outputs_step2/bootstrap_outputs.rda')
+}
+
+
+
+
+```
+
+# Summarize bootstrap outputs
+```{r}
+stb_compare = boot_output %>% dplyr::filter(term == 'lifetime_stb')
+si_compare = boot_output %>% dplyr::filter(term == 'SSI19_i')
+
+
+stb_compare = stb_compare %>%
+  pivot_wider(id_cols = 'iter', names_from = 'coding', values_from = 'estimate') %>%
+  mutate(ratio= human / lexicon,
+         above_1 = ratio > 1)
+
+si_compare = si_compare %>%
+  pivot_wider(id_cols = 'iter', names_from = 'coding', values_from = 'estimate') %>%
+  mutate(ratio= human / lexicon,
+         above_1 = ratio > 1)
+
+```
+
+stb odds ratio comparison
+```{r}
+sum(stb_compare$above_1 / nrow(stb_compare))
+mean(stb_compare$ratio)
+
+quantile(stb_compare$ratio, c(.025, .975))
+```
+
+si odds ratio comparison
+```{r}
+
+sum(si_compare$above_1 / nrow(si_compare))
+mean(si_compare$ratio)
+
+quantile(si_compare$ratio, c(.025, .975))
+
+```
+
+```{r}
+maps_long = maps %>%
+  dplyr::select(ID, flag_bin, suicide_related, age, lifetime_stb, SSI19_i, id_row) %>%
+  pivot_longer(cols = c('flag_bin', 'suicide_related'))
+
+sum(is.na(maps_long$value))
+
+si_human_vs_lexicon  = glmmTMB(
+    value ~ SSI19_i*name + age + (1 | ID),
+    family = binomial(link = "logit"),
+    data = dplyr::select(maps_long, ID, age, SSI19_i, name, value) %>% na.omit() %>% mutate(SSI19_i = scale(SSI19_i)))
+
+stb_human_vs_lexicon  = glmmTMB(
+    value ~ lifetime_stb*name + age + (1 | ID),
+    family = binomial(link = "logit"),
+    data = dplyr::select(maps_long, ID, age, lifetime_stb, name, value) %>% na.omit())
+
+
+si_human_vs_lexicon_output = broom.mixed::tidy(si_human_vs_lexicon, conf.int=TRUE) %>%
+  mutate(across(where(is.numeric), ~ as.numeric(formatC(., format = "f", digits = 3))))
+
+stb_human_vs_lexicon_output = broom.mixed::tidy(stb_human_vs_lexicon, conf.int=TRUE) %>%
+  mutate(across(where(is.numeric), ~ as.numeric(formatC(., format = "f", digits = 3))))
+
+```

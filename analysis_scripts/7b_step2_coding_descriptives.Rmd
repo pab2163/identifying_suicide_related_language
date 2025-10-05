@@ -1,0 +1,261 @@
+---
+title: "Descriptive (Full Cohort) MAPS Analysis of Coded Content Labels"
+author: "Paul Alexander Bloom"
+date: "2025-05-13"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(purrr)
+library(tidytext)  
+library(stringr)  
+library(glmmTMB)
+library(wordcloud)
+library(tm)
+library(wordcloud)
+library(RColorBrewer)
+```
+
+```{r}
+load('../data_stage2/maps_full_codings_spellchecked.rda')
+
+
+total_flagged = final_spellcheck_codings %>%
+  dplyr::filter(flag_final_no_emojis ==1) %>% nrow()
+
+
+# To get Precision
+final_spellcheck_codings %>%
+  dplyr::filter(flag_final_no_emojis ==1) %>%
+  group_by(suicide_related) %>%
+  summarise(n=n(), prop = n/total_flagged)
+
+
+true_positives = final_spellcheck_codings %>%
+  dplyr::filter(flag_final_no_emojis ==1 & suicide_related ==1)
+
+
+na_timing = dplyr::filter(true_positives, is.na(timing)) %>%
+  dplyr::select(id, everything())
+```
+
+
+
+```{r}
+# Vector of binary column names
+binary_cols = c(
+  "jokes_hyperbole", "first_si_passive", "first_si_active",
+  "first_nssi_thought", "first_nssi_behav", "first_si_absence",
+  "first_victim", "first_sb", "first_lifehate", "first_helpseek",
+  "first_reason_living", "second_support", "second_victim", "second_si",
+  "second_sb", "second_nssi", "third_support", "third_victim", "third_si",
+  "third_sb", "third_nssi", "gaming", "lethal_means", "resources",
+  "maps", "celeb", "media", "art", "unclear", "other"
+)
+
+
+# Make sure binary columns are binarized
+true_positives[binary_cols] <- lapply(true_positives[binary_cols], function(x) {
+  x[x == "" | is.na(x)] <- 0      # Convert NA or blank string to 0
+  as.numeric(x)                  # Convert to numeric if not already
+})
+
+# Compute proportion of 1s in each column
+prop_ones <- sapply(true_positives[binary_cols], function(x) mean(x == 1, na.rm = TRUE))
+
+# Create a dataframe of results
+prop_df <- data.frame(
+  variable = names(prop_ones),
+  proportion_ones = prop_ones
+)
+
+
+
+```
+
+# Multilevel models for proportion of each content category
+```{r}
+flagged_long = true_positives %>%
+  pivot_longer(all_of(binary_cols)) %>%
+  mutate(value = ifelse(is.na(value), 0, value))
+
+coding_labels = read.csv('../data_stage2/coding_labels.csv')
+flagged_long = left_join(flagged_long, coding_labels, by = 'name')
+flagged_long = mutate(flagged_long, 
+                      strname = name,
+                      name=label) %>%
+  dplyr::select(-label)
+
+
+by_id = flagged_long %>%
+  group_by(id, strname, name) %>%
+  summarise(prop = sum(value ==1)/n())
+
+by_id <- by_id %>%
+  mutate(
+    panel = case_when(
+      str_detect(strname, "first") ~ "1st Person",
+      str_detect(strname, "second") ~ "2nd Person",
+      str_detect(strname, "third") ~ "3rd Person",
+      TRUE ~ "General"
+    ))
+    
+cat_models = flagged_long %>%
+  group_by(name, strname) %>%
+  nest() %>%
+  mutate(model = purrr::map(data, ~glmmTMB::glmmTMB(
+                    value ~ 1 + (1 | id),
+                    family = binomial(link = "logit"),
+                    data = .)),
+         emmean = purrr::map(model, ~emmeans::emmeans(., specs = ~1, type = 'response') %>% data.frame())
+    )
+
+cat_emmeans = cat_models %>%
+  dplyr::select(-model, -data) %>%
+  unnest(emmean) %>%
+  mutate(
+         asymp.LCL = ifelse(is.na(asymp.LCL), 0, asymp.LCL),
+         asymp.UCL = ifelse(is.na(asymp.UCL), 0, asymp.UCL))
+
+cat_emmeans = cat_emmeans %>%
+  mutate(
+    panel = case_when(
+      str_detect(strname, "first") ~ "1st Person",
+      str_detect(strname, "second") ~ "2nd Person",
+      str_detect(strname, "third") ~ "3rd Person",
+      TRUE ~ "General"
+    ))
+
+cat_emmeans = cat_emmeans %>%
+ mutate(name_reordered = reorder_within(x = name, by = prob, within = panel))
+
+
+
+language_type = ggplot(cat_emmeans, aes(y = reorder_within(name, by = prob, within = panel), x = prob)) +
+  geom_point(data = cat_emmeans,  aes(x = prob, y = reorder_within(name, by = prob, within = panel), color = panel)) +
+  geom_errorbarh(data = cat_emmeans, 
+                  aes(y = reorder_within(name, by = prob, within = panel), x = prob, xmin = asymp.LCL, xmax = asymp.UCL, color = panel)) +
+  facet_grid(rows = vars(panel), scales = 'free_y', drop = TRUE, switch = 'both') +
+  theme_bw() +
+  labs(title = '',
+       subtitle = paste0('N=', nrow(true_positives), ' labeled entries'),
+       x = 'Proportion of Suicide-Related Entries',
+       y = NULL) +
+  theme(legend.position='none') +
+   scale_y_reordered()
+
+
+ggsave(language_type, file = '../figures/in_progress/prelim_language_type.png',
+       height = 5.5, width = 8)
+
+
+table(true_positives$timing)
+
+```
+
+# Current and first-person
+```{r}
+true_positives = mutate(true_positives, timing = tolower(timing))
+
+# proportion current or future
+sum(grepl('current|future', true_positives$timing))  / nrow(true_positives)
+
+# past w/out current/future
+sum(grepl("recent|past|lifetime", true_positives$timing) & 
+    !grepl("current|future", true_positives$timing)) / nrow(true_positives)
+
+# no timing
+sum(grepl('none', true_positives$timing) & ! grepl('current|future|recent|past|lifetime', true_positives$timing)) / nrow(true_positives)
+
+table(true_positives$timing)
+
+true_positives = mutate(true_positives,
+                        current_first_person = case_when(
+                          first_si_active == 1 & 
+                            grepl('current', timing)  ~ 'Yes',
+                          first_si_active == 1 & 
+                            grepl('future', timing)  ~ 'Yes',
+                          first_sb == 1 & 
+                            grepl('current', timing)  ~ 'Yes',
+                          first_sb == 1 & 
+                            grepl('future', timing)  ~ 'Yes',
+                          first_helpseek == 1 & 
+                            grepl('current', timing)  ~ 'Yes',
+                          first_helpseek == 1 & 
+                            grepl('future', timing)  ~ 'Yes',
+                          TRUE ~ 'No'
+                        ))
+
+true_positives = mutate(true_positives,
+                        noncurrent_first_person = case_when(
+                          first_si_active == 1 & 
+                            !grepl('current', timing) & 
+                            !grepl('future', timing)  ~ 'Yes',
+                          first_sb == 1 & 
+                            !grepl('current', timing) & 
+                            !grepl('future', timing) ~ 'Yes',
+                          first_helpseek == 1 & 
+                           ! grepl('current', timing) & 
+                            !grepl('future', timing) ~ 'Yes',
+                          TRUE ~ 'No'
+                        ))
+
+
+table(true_positives$noncurrent_first_person)
+
+
+table(true_positives$current_first_person)/nrow(true_positives)
+
+
+sum(true_positives$first_si_active) / nrow(true_positives)
+sum(true_positives$first_si_passive) / nrow(true_positives)
+sum(true_positives$jokes_hyperbole, na.rm=TRUE) / nrow(true_positives)
+
+
+```
+
+
+# Models of authentic first-person current suicidal ideation
+
+
+```{r}
+model_currfirst = true_positives %>% 
+  mutate(currfirst = ifelse(current_first_person=='Yes', 1, 0)) %>%
+  glmmTMB::glmmTMB(
+                    currfirst ~ 1 + (1 | id),
+                    family = binomial(link = "logit"),
+                    data = .)
+
+
+
+emmean_currfirst = emmeans::emmeans(model_currfirst, specs = ~1, type = 'response') %>% data.frame()
+
+summary(model_currfirst)
+
+currfirst_v2 = ggplot(emmean_currfirst, aes(x = prob)) +
+  theme_bw() +
+  geom_histogram(data = current_first_prop %>% dplyr::filter(current_first_person=='Yes'),
+              aes(x = prop)) +
+  geom_point(aes(y=0), size = 3, color = 'red') +
+  geom_errorbarh(aes(xmin = asymp.LCL, xmax = asymp.UCL, y = 0), height = 0.2, lwd = 1, color = 'red') +
+  labs(x = 'Proportion of Suicide-Related Entries\nExpressing Authentic Current 1st-Person Active STB',
+       y = 'Count of Participants',
+       title = '')
+
+content_grid = cowplot::plot_grid(language_type, currfirst_v2,
+                   align = 'v', axis = 'lr', 
+                   nrow = 2,
+                   labels = c('A: Content Labels of Youth Suicidal Language',
+                            'B: Expressions of Authentic Current 1st-Person STB'),
+                   rel_heights = c(2,1),
+                   hjust = 0)
+
+cowplot::save_plot(content_grid, file = '../figures/main/human_labels.png', 
+                   base_width = 6.8, base_height = 10)
+
+```

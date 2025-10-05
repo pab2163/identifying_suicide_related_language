@@ -1,5 +1,5 @@
 ---
-title: "Aggregate Stage 1 Codings"
+title: "Aggregate Human Coding of MAPS Data"
 author: "Paul Alexander Bloom"
 date: "2025-04-25"
 output: html_document
@@ -7,88 +7,12 @@ output: html_document
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
-```
-
-This script aggregates human labels of the presence vs absence of suicide-related language
-
-```{r}
 library(tidyverse)
 library(purrr)
-
-combine_coder_files = function(file_paths, unique_col_name) {
-  
-  data_list = map(file_paths, function(path) {
-    df = read_csv(path, show_col_types = FALSE)
-    
-    coder_name = tools::file_path_sans_ext(basename(path))
-    
-    if (!(unique_col_name %in% names(df))) {
-      stop(glue::glue("Column `{unique_col_name}` not found in {path}"))
-    }
-    
-    df = df %>% rename(!!coder_name := all_of(unique_col_name))
-    
-    df
-  })
-
-  # Determine shared columns (i.e., everything except the renamed unique columns)
-  join_keys = reduce(data_list, function(x, y) intersect(names(x), names(y)))
-  
-  combined_df = reduce(data_list, full_join, by = join_keys)
-  
-  return(combined_df)
-}
-
-
-
-
-coalesce_coder_columns = function(combined_df, coder_key_path) {
-  
-  # Read in the coder key: subjectID, coder1, coder2
-  coder_key = read_csv(coder_key_path, show_col_types = FALSE)
-
-  # Pivot longer to get tidy format: one row per subjectID per coder
-  long_df = combined_df %>%
-    pivot_longer(
-      cols = contains('step_one_coded'),
-      names_to = "coder",
-      values_to = "code"
-    ) %>%
-    mutate(coder = gsub('step_one_coded_', '', coder))
-
-  # Join twice: once for coder1, once for coder2
-  df_coder1 = coder_key %>%
-    select(subjectID, coder=coder1) %>%
-    left_join(long_df, by = c("subjectID", "coder")) %>%
-    rename(code1 = code, coder1_name = coder)
-
-  df_coder2 = coder_key %>%
-    select(subjectID, coder=coder2) %>%
-    left_join(long_df, by = c("subjectID", "coder")) %>%
-    rename(code2 = code, coder2_name = coder)
-
-  # Join them back together by subjectID
-  final_df = df_coder1 %>%
-    left_join(df_coder2,
-      by = c('subjectID', 'tm_message_start','tm_message_end', 
-             'timeDiff', 'id_app', 'text_clean')
-    )
-  
-  check = final_df %>%
-    group_by(subjectID, coder1_name, coder2_name) %>%
-    count()
-  
-  print(check)
-  
-  final_df = final_df %>%
-    select(-code1, -code2, -coder1_name, -coder2_name, everything(), code1, code2, coder1_name, coder2_name)
-
-
-  return(final_df)
-}
+source('helper_functions.R')
 ```
 
-
+# Combine coder files and coalesce together
 ```{r}
 # Step 1: Combine the coder files
 file_paths = list.files("/Volumes/AUERBACHLAB/Columbia/MAPS_Language/data/manual_coding/suicide_language/step_one_coding/coded_reconverted_csvs/", 
@@ -104,6 +28,7 @@ coalesced = coalesced %>%
     code2 = replace_na(code2, 0)
   )
 
+# Check agreement statistics
 agreement_check =  coalesced%>%
   group_by(subjectID, coder1_name, coder2_name) %>%
   summarise(n=n(), 
@@ -114,12 +39,15 @@ agreement_check =  coalesced%>%
             disagreed = sum(code1!=code2),
             agree_prop = agreed/n)
 
+# Find entries where coders disagree
 disagree_rows = dplyr::filter(coalesced, code1 != code2)
 
-
 agree_rows = dplyr::filter(coalesced, code1 == code2, code1==1)
+```
 
+# Calculate cohen's kappa by subject
 
+```{r}
 kappa_by_subject = coalesced %>%
   select(subjectID, code1, code2) %>%
   group_by(subjectID) %>%
@@ -158,21 +86,9 @@ disagree_rows_for_coder3 = disagree_rows %>%
 
 disagree_rows_for_coder3$code3 = ''
 
-# write.csv(disagree_rows_for_coder3, file = paste0('/Volumes/AUERBACHLAB/Columbia/MAPS_Language/data/manual_coding/suicide_language/step_one_coding/to_review/disagreement_rows_for_coder3_', Sys.Date(), '.csv'))
+write.csv(disagree_rows_for_coder3, file = paste0('/Volumes/AUERBACHLAB/Columbia/MAPS_Language/data/manual_coding/suicide_language/step_one_coding/to_review/disagreement_rows_for_coder3_', Sys.Date(), '.csv'))
 ```
 
-
-```{r}
-stage2_cols = c(
-  'suicide_related', 'timing',
-  "first_si_passive", "first_si_active", "first_nssi_thought", "first_nssi_behav", 
-  "first_si_absence", "first_victim", "first_sb", "first_lifehate", 
-  "first_helpseek", "first_reason_living", "second_support", "second_victim", 
-  "second_si", "second_sb", "second_nssi", "third_support", "third_victim", 
-  "third_si", "third_sb", "third_nssi", "jokes_hyperbole", "gaming", 
-  "lethal_means", "resources", "maps", "celeb", "media", "art", "unclear", "other"
-)
-```
 
 # Pull in coder3 ratings to break ties
 
@@ -203,6 +119,7 @@ final_codings <- left_join(final_codings,
 
 sum(!is.na(final_codings$code3))
 
+# Use coder3 to resolve coding disagreements as tiebreaker
 final_codings = final_codings %>%
   mutate(suicide_related = 
            case_when(code1 == code2 ~ code1,
@@ -216,5 +133,5 @@ final_codings = final_codings %>%
   dplyr::select(-contains('code'), -tm_message_startj, -tm_message_endj)
 
 
-write.csv(tmp_final_coding, file = '../../../data/manual_coding/suicide_language/step_one_coding/coded_reconverted_csvs/final/final_codings.csv', row.names = FALSE)
+write.csv(final_codings, file = '../../../data/manual_coding/suicide_language/step_one_coding/coded_reconverted_csvs/final/final_codings.csv', row.names = FALSE)
 ```

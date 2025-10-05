@@ -1,0 +1,395 @@
+---
+title: 'Prepare MAPS and WashU Data for Model Validation'
+author: "Paul Alexander Bloom"
+date: "2025-04-30"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(caret)
+library(ggplot2)
+library(stringr)
+source('helper_functions.R')
+```
+
+
+# Read in outputs from preprocessed / spellchecked pipelines
+
+```{r}
+lexicon_processed = read.csv('../model_outputs_step1/maps_youth_lexicon_outputs.csv')
+lexicon_raw = read.csv('../model_outputs_step1/maps_youth_lexicon_outputs_raw.csv')
+lexicon_spellchecked = read.csv('../model_outputs_step1/maps_youth_lexicon_outputs_spellchecked.csv')
+
+lexicon_spellchecked = dplyr::select(lexicon_spellchecked, id_app, 
+                                     subjectID, tm_message_start, tm_message_end, corrected_message,
+                                     contains('token'), contains('lexicon'),
+                                     emoji_flag, emojis_found)
+
+names(lexicon_spellchecked)[!names(lexicon_spellchecked) %in% c("subjectID", "tm_message_start", "tm_message_end", "id_app", "corrected_message")] =
+  paste0(names(lexicon_spellchecked)[!names(lexicon_spellchecked) %in% c("subjectID", "tm_message_start", "tm_message_end", "id_app", "corrected_message")], "_spellchecked")
+
+
+lexicon_spellchecked = lexicon_spellchecked %>%
+  mutate(
+    tm_message_start = gsub("T", " ", tm_message_start),
+    tm_message_start = gsub("Z", "", tm_message_start),
+    tm_message_end = gsub("T", " ", tm_message_end),
+    tm_message_end = gsub("Z", "", tm_message_end)
+  )
+
+lexicon_processed = dplyr::left_join(lexicon_processed, lexicon_spellchecked, by = c("subjectID", "tm_message_start", "tm_message_end", "id_app")) %>%
+  distinct(subjectID, tm_message_start, tm_message_end, id_app, .keep_all = TRUE)
+
+lexicon_raw = dplyr::select(lexicon_raw, subjectID, tm_message_start,
+                            tm_message_end, id_app, 
+                            contains('token'),
+                            contains('suicid'),
+                            contains('lexicon'), 
+                            contains('emoji')) %>%
+  mutate(
+    tm_message_start = gsub("T", " ", tm_message_start),
+    tm_message_start = gsub("Z", "", tm_message_start),
+    tm_message_end = gsub("T", " ", tm_message_end),
+    tm_message_end = gsub("Z", "", tm_message_end)
+  )
+
+names(lexicon_raw)[!names(lexicon_raw) %in% c("subjectID", "tm_message_start", "tm_message_end", "id_app")] =
+  paste0(names(lexicon_raw)[!names(lexicon_raw) %in% c("subjectID", "tm_message_start", "tm_message_end", "id_app")], "_raw")
+
+
+maps_validation_df = left_join(lexicon_processed, lexicon_raw, by = c("subjectID", "tm_message_start", "tm_message_end", "id_app")) %>%
+  distinct()
+
+rm(lexicon_processed, lexicon_raw, lexicon_spellchecked)
+gc()
+```
+
+
+```{r}
+# remove first 12000 entries of participant id_to_recode_utf8 that were used in training/fine-tuning to avoid circularity
+maps_validation_df <- maps_validation_df %>%
+  arrange(subjectID, tm_message_start) %>% # Ensure chronological order
+  group_by(subjectID) %>%
+  filter(!(subjectID == id_to_recode_utf8 & row_number() <= 12000)) %>%
+  ungroup()
+
+
+# make sure NAs are 0s for human codings
+maps_validation_df = mutate(maps_validation_df, suicide_related = ifelse(is.na(suicide_related), 0, suicide_related))
+
+false_negative = maps_validation_df %>%
+  dplyr::filter(suicide_related ==1 &
+                  suicide_lexicon_custom_full == 0 & emoji_flag ==0 & celeb_historical_suicide_token ==0 &
+                  suicide_lexicon_custom_full_raw == 0 & emoji_flag_raw ==0 & celeb_historical_suicide_token_raw ==0 & 
+                  suicide_lexicon_custom_full_spellchecked == 0 & emoji_flag_spellchecked ==0 & 
+                  celeb_historical_suicide_token_spellchecked ==0)
+
+false_positive = maps_validation_df %>%
+  dplyr::filter(suicide_related == 0 &
+                  (suicide_lexicon_custom_full == 1 |
+                     emoji_flag ==1 | 
+                     celeb_historical_suicide_token ==1 |
+                     suicide_lexicon_custom_full_raw ==1 |
+                    emoji_flag_raw ==1 | 
+                    celeb_historical_suicide_token_raw ==1 | 
+                    suicide_lexicon_custom_full_spellchecked == 1 | 
+                    emoji_flag_spellchecked ==1 | 
+                    celeb_historical_suicide_token_spellchecked ==1))
+
+true_positive = maps_validation_df %>%
+  dplyr::filter(suicide_related ==1 &
+                  (suicide_lexicon_custom_full == 1 | emoji_flag ==1 | celeb_historical_suicide_token ==1 |
+                  suicide_lexicon_custom_full_raw ==1 |emoji_flag_raw ==1 | celeb_historical_suicide_token_raw ==1 |
+                    suicide_lexicon_custom_full_spellchecked == 1 | 
+                    emoji_flag_spellchecked ==1 | 
+                    celeb_historical_suicide_token_spellchecked ==1))
+```
+
+# Code different flags
+```{r}
+maps_validation_df = mutate(maps_validation_df, 
+                            lexicon_emoji_celeb_flag = ifelse(
+                                    suicide_lexicon_custom_full == 1 | 
+                                    emoji_flag == 1 | 
+                                    celeb_historical_suicide_token ==1 |
+                                    suicide_lexicon_custom_full_raw == 1 | 
+                                    emoji_flag_raw == 1 | 
+                                    celeb_historical_suicide_token_raw ==1 |
+                                    suicide_lexicon_custom_full_spellchecked == 1 | 
+                                    emoji_flag_spellchecked ==1 | 
+                                    celeb_historical_suicide_token_spellchecked ==1, 
+                                    1, 0),
+                            lexicon_only_flag = ifelse(suicide_lexicon_custom_full == 1 | 
+                                    suicide_lexicon_custom_full_raw == 1 |
+                                    suicide_lexicon_custom_full_spellchecked, 1, 0),
+                            swaminathan_full_flag = ifelse(
+                                    suicide_lexicon_swaminathan_2023 ==1 |
+                                    suicide_lexicon_swaminathan_2023_raw ==1 |
+                                    suicide_lexicon_swaminathan_2023_spellchecked ==1,
+                                    1, 0),
+                            swaminathan_thoughtsmethods_flag = ifelse(
+                                    suicide_lexicon_thoughts_methods_only ==1 |
+                                    suicide_lexicon_thoughts_methods_only_raw ==1 |
+                                    suicide_lexicon_thoughts_methods_only_spellchecked ==1,
+                                    1, 0),
+                            lexicon_emoji_celeb_flag_nospellcheck = ifelse(
+                                    suicide_lexicon_custom_full == 1 | 
+                                    emoji_flag == 1 | 
+                                    celeb_historical_suicide_token ==1 |
+                                    suicide_lexicon_custom_full_raw == 1 | 
+                                    emoji_flag_raw == 1 | 
+                                    celeb_historical_suicide_token_raw ==1, 
+                                    1, 0),
+                            lexicon_only_flag_nospellcheck = ifelse(suicide_lexicon_custom_full == 1 | 
+                                    suicide_lexicon_custom_full_raw == 1, 1, 0),
+                            swaminathan_full_flag_nospellcheck = ifelse(
+                                    suicide_lexicon_swaminathan_2023 ==1 |
+                                    suicide_lexicon_swaminathan_2023_raw ==1,
+                                    1, 0),
+                            swaminathan_thoughtsmethods_flag_nospellcheck = ifelse(
+                                    suicide_lexicon_thoughts_methods_only ==1 |
+                                    suicide_lexicon_thoughts_methods_only_raw ==1,
+                                    1, 0))
+```
+
+# Import Isaac Topic Data
+
+```{r}
+topic = read.csv('../../../data/Preprocessed/for_srl_head_to_head/Held_out_BERTOPIC.csv')
+topic_from = read.csv('../../../data/Preprocessed/for_srl_head_to_head/preprocessed_no_spellcorrect.csv')
+
+topic = cbind(
+  dplyr::select(topic, Document, Name, is_suicide_topic, is_suicide_topic_manual),
+  dplyr::select(topic_from, id_app, subjectID, tm_message_start, tm_message_end))
+
+
+topic = topic %>% mutate(
+    tm_message_start = gsub("T", " ", tm_message_start),
+    tm_message_start = gsub("Z", "", tm_message_start),
+    tm_message_end = gsub("T", " ", tm_message_end),
+    tm_message_end = gsub("Z", "", tm_message_end)
+  )
+
+maps_validation_df = left_join(maps_validation_df, dplyr::select(topic, id_app, subjectID, 
+                                 tm_message_start, tm_message_end,
+                                 is_suicide_topic, is_suicide_topic_manual),
+               by = c('id_app', 'subjectID', 
+                                 'tm_message_start', 'tm_message_end')) %>%
+  distinct()
+
+```
+
+
+```{r}
+srl_colnames = c(
+  "Passive.suicidal.ideation",
+  "Active.suicidal.ideation...suicidal.planning",
+  "Lethal.means.for.suicide",
+  "Direct.self.injury",
+  "Suicide.exposure",
+  "Other.suicidal.language",
+  "Hospitalization",
+  "Loneliness...isolation",
+  "Social.withdrawal",
+  "Relationship.issues",
+  "Relationships...kinship",
+  "Bullying",
+  "Sexual.abuse...harassment",
+  "Physical.abuse...violence",
+  "Aggression...irritability",
+  "Alcohol.use",
+  "Other.substance.use",
+  "Impulsivity",
+  "Defeat...feeling.like.a.failure",
+  "Burdensomeness",
+  "Shame..self.disgust....worthlessness",
+  "Guilt",
+  "Anxiety",
+  "Panic",
+  "Entrapment...desire.to.escape",
+  "Trauma...PTSD",
+  "Agitation",
+  "Rumination",
+  "Depressed.mood",
+  "Anhedonia...uninterested",
+  "Emotional.pain...psychache",
+  "Grief...bereavement",
+  "Existential.meaninglessness...purposelessness",
+  "Emptiness",
+  "Hopelessness",
+  "Perfectionism",
+  "Fatigue...tired",
+  "Sleep.issues",
+  "Psychosis...schizophrenia",
+  "Bipolar.Disorder",
+  "Borderline.Personality.Disorder",
+  "Eating.disorders",
+  "Physical.health.issues...disability",
+  "Incarceration",
+  "Poverty...homelessness",
+  "Gender...sexual.identity",
+  "Discrimination",
+  "Finances...work.stress",
+  "Barriers.to.treatment",
+  "Mental.health.treatment"
+)
+```
+
+```{r}
+low_spellchecked = compile_low_files(outdir = '../model_outputs_step1/low_lexicon_outputs_spellchecked/')
+low_notspellchecked = compile_low_files(outdir = '../model_outputs_step1/low_lexicon_outputs/')
+
+
+low_srl_flagged = dplyr::left_join(low_notspellchecked,
+                                   dplyr::select(low_spellchecked,
+                                                 subjectID, tm_message_start, tm_message_end, id_app,
+                                                 low_srl_allconstructs_spellchecked=low_srl_allconstructs,
+                                                 low_srl_flag_count_only_spellchecked=low_srl_flag_count_only,
+                                                 low_srl_flag_spellchecked=low_srl_flag),
+                                   by = c('subjectID', 'tm_message_start', 'tm_message_end', 'id_app')) %>%
+  dplyr::select(-contains('.')) %>%
+  mutate(low_srl_flag_count_only_combined = ifelse(
+    low_srl_flag_count_only_spellchecked == 1 | low_srl_flag_count_only == 1, 1, 0
+  ),
+  low_srl_flag_combined = ifelse(
+    low_srl_flag_spellchecked == 1 | low_srl_flag == 1, 1, 0
+  ),
+  low_srl_allconstructs_combined = ifelse(
+    low_srl_allconstructs == 1 | low_srl_allconstructs_spellchecked ==1, 1, 0
+  ))  %>%
+  distinct()
+
+save(low_srl_flagged, file = '../model_outputs_step1/low_results.rda')
+```
+
+
+# Join low srl predictions 
+```{r}
+load('../model_outputs_step1/low_results.rda')
+low_srl_flagged <- low_srl_flagged %>%
+  mutate(
+    tm_message_start = gsub("T", " ", tm_message_start),
+    tm_message_start = gsub("Z", "", tm_message_start),
+    tm_message_end = gsub("T", " ", tm_message_end),
+    tm_message_end = gsub("Z", "", tm_message_end)
+  )
+
+
+low_srl_flagged <- low_srl_flagged %>%
+  mutate(
+    text_clean = text_clean %>%
+      tolower() %>%
+      str_replace_all("[[:punct:]&&[^|]]", "")  # remove all punctuation except '|'
+  )
+
+
+maps_validation_df <- maps_validation_df %>%
+  mutate(
+    tm_message_start = as.character(tm_message_start),
+    tm_message_end = as.character(tm_message_end)
+  )
+
+# Now do the join
+maps_validation_df <- left_join(
+  maps_validation_df,
+  low_srl_flagged %>%
+    dplyr::select(subjectID, tm_message_start, tm_message_end, id_app, contains('low')),
+  by = c('subjectID', 'tm_message_start', 'tm_message_end', 'id_app')
+) %>%
+  distinct()
+
+
+
+save(maps_validation_df, file = '../model_outputs_step1/data_for_maps_validation.rda')
+```
+
+
+# WashU
+```{r}
+washu_youth = read.csv('../model_outputs_step1/washu_coded_data_notext_05.27.2025.csv')
+
+washu_youth %>%
+  group_by(filepath) %>%
+  summarise(n=n()) %>%
+  ggplot(data = ., aes(x=n)) +
+  geom_histogram()
+
+
+count_by_participant = washu_youth %>%
+  group_by(filepath) %>%
+  summarise(n=n())
+
+mean(count_by_participant$n)
+
+  count <- read.csv('../model_outputs_step1/washu_low_lexicon_counts_notext.csv')
+  count = mutate(count, low_srl_allconstructs = if_any(all_of(srl_colnames), ~ .x == 1), 1, 0)
+  similarity <- read.csv('../model_outputs_step1/washu_low_lexicon_similarity_notext.csv')
+  
+  # Select relevant columns
+  count <- dplyr::select(count, filename, contains('tm_message'), id_app, contains('suicid'), SI, low_srl_allconstructs)
+  similarity <- dplyr::select(similarity, filename, contains('tm_message'), id_app, SI,
+                              # max
+                              Passive.suicidal.ideation_max_s = Passive.suicidal.ideation_max,
+                              Lethal.means.for.suicide_max_s = Lethal.means.for.suicide_max,
+                              Active.suicidal.ideation...suicidal.planning_max_s = Active.suicidal.ideation...suicidal.planning_max,
+                              Suicide.exposure_max_s = Suicide.exposure_max,
+                              Other.suicidal.language_max_s = Other.suicidal.language_max,
+                              # mean
+                              Passive.suicidal.ideation_mean_s = Passive.suicidal.ideation_mean,
+                              Lethal.means.for.suicide_mean_s = Lethal.means.for.suicide_mean,
+                              Active.suicidal.ideation...suicidal.planning_mean_s = Active.suicidal.ideation...suicidal.planning_mean,
+                              Suicide.exposure_mean_s = Suicide.exposure_mean,
+                              Other.suicidal.language_mean_s = Other.suicidal.language_mean)
+  
+  # Join
+  
+  count = mutate(count, subjectID = substr(filename, start = 1, stop = 4))
+  similarity = mutate(similarity, subjectID = substr(filename, start = 1, stop = 4))
+  for_validation <- dplyr::left_join(count %>% dplyr::select(-filename), similarity %>% dplyr::select(-filename), by = c('subjectID', 'SI', 'tm_message_start', 'tm_message_end', 'id_app')) %>%
+    distinct()
+  
+  # Get column names
+  count_flag_cols <- names(count)[grepl('suicid', tolower(names(count)))]
+  similarity_max_cols <- names(for_validation)[grepl('_max_s$', names(for_validation))]
+  similarity_mean_cols <- names(for_validation)[grepl('_mean_s$', names(for_validation))]
+
+  # Create flags
+  for_validation <- for_validation %>%
+    mutate(
+      low_srl_flag_count_only = if_else(
+        if_any(all_of(count_flag_cols), ~ .x == 1), 1, 0
+      ),
+      low_srl_flag_similarity_only = if_else(
+        if_any(all_of(similarity_max_cols), ~ .x > 0.7) | 
+          if_any(all_of(similarity_mean_cols), ~ .x > 0.5), 1, 0
+      ),
+      low_srl_flag = if_else(
+        low_srl_flag_count_only == 1 | low_srl_flag_similarity_only == 1, 1, 0
+      )
+    )
+
+  
+washu_youth = mutate(washu_youth, subjectID = str_extract(filepath, "(?<=/)[0-9]+(?=\\.csv)"))
+
+for_validation = dplyr::select(for_validation, subjectID, tm_message_start, tm_message_end,
+                               id_app, SI, contains('low_srl'))
+
+washu_for_validation = dplyr::left_join(washu_youth, for_validation, 
+                               by = c('subjectID', 'tm_message_start', 'tm_message_end',
+                                      'id_app', 'SI')) %>%
+  distinct()
+
+# correct miscoding
+washu_for_validation = mutate(washu_for_validation, 
+                              SI = ifelse(tm_message_start == 'DATETIME' & subjectID == id_washu_errorcorrect, 0, SI),
+            SI = ifelse(is.na(SI), 0, SI),
+            low_srl_allconstructs = as.integer(low_srl_allconstructs))
+
+save(washu_for_validation, file = '../model_outputs_step1/data_for_washu_validation.rda')
+
+```

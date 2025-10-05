@@ -1,0 +1,538 @@
+---
+title: "Step 2 Analyses of MAPS & PREDICT Flagged Data - Multiverse Sensititivy Analyses To Covariates"
+author: "Paul Alexander Bloom"
+date: "2025-05-13"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(purrr)
+library(glmmTMB)
+library(emmeans)
+library(lubridate)
+library(ggplot2)
+library(ggtext)
+library(specr)
+library(RColorBrewer)
+theme_set(theme_bw())
+```
+
+
+```{r}
+maps_selfreport = read_csv('/Volumes/AUERBACHLAB/Columbia/MAPS_Data/Analysis/Wrangling/Self_Report/data/selfreport_07.11.2024.csv') %>% 
+  dplyr::select(ID, age, GROUP, Control, SSI19_i, sex, iPhone, SITE) 
+
+maps = read_csv('../data_stage2/maps_flagged_vs_predict_final_2025-07-28.csv')
+
+
+maps = mutate(maps, flag_bin =
+                   ifelse(suicide_lexicon_custom_token == 1 |
+                            celeb_historical_suicide_token ==1 |
+                            suicide_lexicon_custom_pairs ==1, 1, 0))
+maps = maps %>%
+  distinct(corrected_message, tm_message_start, tm_message_end, id_app, .keep_all = TRUE)
+
+maps = dplyr::select(maps,
+                            -contains('suicide'),
+                            -cat_tz,
+                            -contains('emoji'))
+
+gc()
+
+
+
+maps_unique_id = data.frame(filepath=unique(maps$filepath))
+maps_unique_id = mutate(maps_unique_id, ID = str_extract(filepath, "(?<=KeyInput/)[^/]+"))
+
+maps = left_join(maps, maps_unique_id, by = 'filepath')
+maps = maps %>% dplyr::select(-filepath)
+
+
+gc()
+```
+
+
+```{r}
+maps = left_join(maps, maps_selfreport %>% mutate(ID = as.character(ID)), by = 'ID')
+
+by_id_summary = maps %>%
+  group_by(ID)%>%
+  summarise(total_message = n(),
+            total_flagged = sum(flag_bin==1),
+            proportion_flagged = total_flagged/total_message)
+
+# difference in # of entries as a function of STB history
+maps_n_entries = maps %>%
+  mutate(date = as.Date(tm_message_start)) %>%
+  group_by(ID, Control, date) %>%
+  summarise(n_entries = n()) %>%
+  mutate(cohort = 'MAPS', 
+         lifetime_stb = ifelse(Control ==1, 0, 1))
+
+
+# what proportion of subjects have any flagged
+dplyr::filter(by_id_summary, total_flagged > 0) %>% nrow() / nrow(by_id_summary)
+
+
+# code which participants have >1000 entries
+maps = maps %>%
+  group_by(ID)%>%
+  mutate(total_message = n(),
+         above_1000 = ifelse(total_message>=1000, 1, 0)) %>%
+  ungroup()
+
+maps = mutate(maps, lifetime_stb = ifelse(Control ==1, 0, 1))
+
+
+
+```
+
+```{r}
+predict = read_csv('../data_stage2/predict_flagged_vs_maps_final_2025-08-11.csv')
+
+predict = mutate(predict, flag_bin =
+                   ifelse(suicide_lexicon_custom_token == 1 |
+                            celeb_historical_suicide_token ==1 |
+                            suicide_lexicon_custom_pairs ==1, 1, 0))
+
+predict = predict %>%
+  distinct(corrected_message, tm_message_start, tm_message_end, id_app, filepath, .keep_all = TRUE)
+
+nrow(predict)
+
+# what proportion of predict entries were flagged?
+predict_n = nrow(predict)
+sum_predict_flagged = sum(predict$flag_bin)
+pct_predict_flaggged = 100 *sum(predict$flag_bin) / nrow(predict)
+
+
+load('/Volumes/AUERBACHLAB/Columbia/SP_Data/Analysis/Wrangling/selfreport/predict_demo_05.22.25.Rda')
+
+table(df$age)
+
+predict_stb = df %>%
+  dplyr::select(., 
+                ID, gender, orientation, cis, cishet, age, OS,
+                contains('cssrs'),
+                group,
+                contains('ssi')) %>%
+  mutate(lifetime_stb = ifelse(
+    cssrsLifetimeMostSevere > 2 | cssrsLifetimeAttempt ==1 |
+    cssrsPast2moMostSevere > 2, 1, 0),
+    stb_group = case_when(
+      lifetime_stb ==1 ~ 'Lifetime STB',
+      lifetime_stb ==0 & (group=='MDD' | group=='remMDD') ~ 'Lifetime MDD',
+      lifetime_stb ==0 & group=='HC' ~ 'HC',
+    ),
+    recent_active_ideation = ifelse(cssrsPast2moMostSevere > 2, 1, 0)
+  ) %>%
+  dplyr::select(-contains('cssrs'))
+
+predict = dplyr::select(predict,
+                            -contains('suicide'),
+                            -cat_tz,
+                            -contains('emoji'))
+
+predict_stb_nona = predict_stb %>% dplyr::filter(!is.na(lifetime_stb)) 
+
+predict_stb_nona %>%
+  group_by(lifetime_stb) %>%
+  summarise(pct = n()/nrow(predict_stb_nona))
+
+predict_stb_nona %>%
+  group_by(recent_active_ideation) %>%
+  summarise(pct = n()/nrow(predict_stb_nona))
+
+table(predict_stb_nona$group) / nrow(predict_stb_nona)
+
+predict_unique_id = data.frame(filepath=unique(predict$filepath))
+predict_unique_id = mutate(predict_unique_id, ID = str_extract(filepath, "(?<=PREDICT/)[^/]+"))
+
+predict = left_join(predict, predict_unique_id, by = 'filepath')
+
+predict = left_join(predict, predict_stb, by = 'ID')
+
+predict_n_entries = predict %>%
+  mutate(date = as.Date(tm_message_start)) %>%
+  group_by(ID, lifetime_stb, date) %>%
+  summarise(n_entries = n()) %>%
+  mutate(cohort = 'PREDICT')
+
+
+predict_demo = dplyr::filter(df, ID %in% predict$ID)
+
+
+by_id_summary_predict = predict %>%
+  group_by(ID)%>%
+  summarise(total_message = n(),
+            total_flagged = sum(flag_bin==1),
+            proportion_flagged = total_flagged/total_message)
+
+# what proportion of predict participants have any flagged?
+dplyr::filter(by_id_summary_predict, total_flagged > 0) %>% nrow() / nrow(by_id_summary_predict)
+
+gc()
+```
+
+
+```{r}
+# label participants with over 1000 entries
+predict = predict %>%
+  group_by(ID)%>%
+  mutate(total_message = n(),
+         above_1000 = ifelse(total_message>=1000, 1, 0)) %>%
+  ungroup()
+
+
+predict = mutate(predict, site=ifelse(startsWith(ID, '9'), '1', '2'))
+
+```
+
+# Define glmmTMB model base for specr usage
+
+```{r}
+glmmTMB_model_base <- function(formula, data, ...) {
+  require(glmmTMB)
+  require(broom.mixed)
+  
+  # Expand the base formula with whatever you want included always
+  # 'formula' here is passed in by specr (e.g., "flag_bin ~ Control")
+  formula <- paste(formula, " + (1 | ID)")
+  
+  # Fit the model
+  glmmTMB::glmmTMB(
+    formula = as.formula(formula),
+    family = binomial(link = "logit"),
+    data = data
+  )
+}
+```
+
+# Define multiverses for STB
+
+```{r}
+maps_stb_specs = specr::setup(data = maps,
+                         x = c('lifetime_stb'),
+                         y = c('flag_bin'),
+                         controls = c('age', 'sex', 'iPhone', 'SITE'),
+                         subsets = list(above_1000=1),
+                         model = c('glmmTMB_model_base'))
+
+
+
+predict_stb_specs = specr::setup(data = predict,
+                         x = c('lifetime_stb'),
+                         y = c('flag_bin'),
+                         controls = c('age', 'gender', 'OS', 'site'),
+                         subsets = list(above_1000=1),
+                         model = c('glmmTMB_model_base'))
+
+```
+
+# Define multiverses for SI
+
+```{r}
+maps = mutate(maps, SSI19_i = scale(SSI19_i))
+predict = mutate(predict, SSI19_i = scale(SSI19_total_i))
+
+
+maps_si_specs = specr::setup(data = maps,
+                         x = c('SSI19_i'),
+                         y = c('flag_bin'),
+                         controls = c('age', 'sex', 'iPhone', 'SITE'),
+                         subsets = list(above_1000=1),
+                         model = c('glmmTMB_model_base'))
+
+predict_si_specs = specr::setup(data = predict,
+                         x = c('SSI19_i'),
+                         y = c('flag_bin'),
+                         controls = c('age', 'gender', 'OS', 'site'),
+                         subsets = list(above_1000=1),
+                         model = c('glmmTMB_model_base'))
+
+```
+
+
+# Run multiverses (takes a while)
+```{r}
+start_time = Sys.time()
+maps_stb_multiverse = specr::specr(maps_stb_specs)
+
+save(maps_stb_multiverse, file = '../model_outputs_step2/multiverses/maps_stb_multiverse.rda')
+
+predict_stb_multiverse = specr::specr(predict_stb_specs)
+save(predict_stb_multiverse, file = '../model_outputs_step2/multiverses/predict_stb_multiverse.rda')
+
+
+```
+
+
+# Save outputs
+```{r}
+load('../model_outputs_step2/multiverses/maps_stb_multiverse.rda')
+load('../model_outputs_step2/multiverses/predict_stb_multiverse.rda')
+```
+
+# Plot multiverses
+
+```{r}
+myColors = c('lightblue', 'darkred', 'black')
+
+
+maps_stb_multiverse_data = maps_stb_multiverse$data %>%
+  mutate(cov_site = ifelse(grepl('SITE', controls), '|', ''),
+         cov_age = ifelse(grepl('age', controls), '|', ''),
+         cov_sex = ifelse(grepl('sex', controls), '|', ''),
+         cov_os = ifelse(grepl('iPhone', controls), '|', ''),
+         exclusions = ifelse(subsets=='1', '|', ''),
+         rank = rank(estimate),
+         or = exp(estimate),
+         or_high = exp(conf.high),
+         or_low = exp(conf.low),
+         sig = case_when(
+          or_high > 1 & or_low > 1 ~ 'yes_high',
+          or_high < 1 & or_low < 1 ~ 'yes_low',
+          TRUE ~ 'no'
+         ))
+
+names(myColors) <- levels(maps_stb_multiverse_data$sig)
+colScale <- scale_colour_manual(name = "sig",values = myColors)
+
+maps_stb_multiverse_long = maps_stb_multiverse_data %>%
+  pivot_longer(cols = c('cov_site', 'cov_age', 'cov_sex', 'cov_os', 'exclusions'))
+
+maps_stb_multiverse_long = mutate(maps_stb_multiverse_long,
+  name = dplyr::recode(name,
+    'cov_site'='Covarite\nSite',
+    'cov_sex'='Covariate\nSex',
+    'cov_age'='Covariate\nAge',
+    'cov_os'='Covariate\nOS',
+    'exclusions'='>=1000\nEntries'
+  )
+)
+
+maps_stb_top = ggplot(maps_stb_multiverse_data, aes(x = rank, y = or, color = sig)) +
+  geom_hline(yintercept = 1, lty = 2) + 
+  geom_point() + 
+  geom_errorbar(aes(ymin = or_low, ymax = or_high), width = 0) +
+  labs(title = '', x= NULL, y = 'Lifetime STB > No STB\nOdds Ratio') + 
+  theme(legend.position = 'none') + 
+  scale_color_manual(values = myColors, breaks = c('yes_high', 'yes_low', 'no'))
+
+
+maps_stb_bottom = ggplot(maps_stb_multiverse_long, aes(x = rank, y = '')) +
+  geom_text(aes(label = value)) +
+  facet_grid(rows = vars(name), switch = 'y') +
+  labs(x = 'Models ordered by Odds Ratio', y = '', title = '') +
+  theme(axis.ticks.y = element_blank(),
+        legend.position = 'none') + 
+  scale_color_manual(values = myColors, breaks = c('yes_high', 'yes_low', 'no'))
+
+
+maps_stb_plot = cowplot::plot_grid(maps_stb_top, maps_stb_bottom, 
+  nrow=2,
+  align = 'v', axis = 'lr', labels = 'MAPS')
+
+cowplot::save_plot(maps_stb_plot, file = '../figures/supplemental/maps_stb_multiverse.png',
+  base_height = 8, base_width = 8)
+```
+
+
+```{r}
+predict_stb_multiverse_data = predict_stb_multiverse$data %>%
+  mutate(cov_site = ifelse(grepl('site', controls), '|', ''),
+         cov_age = ifelse(grepl('age', controls), '|', ''),
+         cov_sex = ifelse(grepl('gender', controls), '|', ''),
+         cov_os = ifelse(grepl('OS', controls), '|', ''),
+         exclusions = ifelse(subsets=='1', '|', ''),
+         rank = rank(estimate),
+         or = exp(estimate),
+         or_high = exp(conf.high),
+         or_low = exp(conf.low),
+         sig = case_when(
+          or_high > 1 & or_low > 1 ~ 'yes_high',
+          or_high < 1 & or_low < 1 ~ 'yes_low',
+          TRUE ~ 'no'
+         ))
+
+predict_stb_multiverse_long = predict_stb_multiverse_data %>%
+  pivot_longer(cols = c('cov_site', 'cov_age', 'cov_sex', 'cov_os', 'exclusions'))
+
+predict_stb_multiverse_long = mutate(predict_stb_multiverse_long,
+  name = dplyr::recode(name,
+    'cov_site'='Covarite\nSite',
+    'cov_sex'='Covariate\nSex',
+    'cov_age'='Covariate\nAge',
+    'cov_os'='Covariate\nOS',
+    'exclusions'='>=1000\nEntries'
+  )
+)
+
+predict_stb_top = ggplot(predict_stb_multiverse_data, aes(x = rank, y = or, color = sig)) +
+  geom_hline(yintercept = 1, lty = 2) + 
+  geom_point() + 
+  geom_errorbar(aes(ymin = or_low, ymax = or_high), width = 0) +
+  labs(title = '', x= NULL, y = 'Lifetime STB > No STB\nOdds Ratio') +
+  theme(legend.position = 'none') + 
+  scale_color_manual(values = myColors, breaks = c('yes_high', 'yes_low', 'no'))
+
+
+predict_stb_bottom = ggplot(predict_stb_multiverse_long, aes(x = rank, y = '')) +
+  geom_text(aes(label = value)) +
+  facet_grid(rows = vars(name), switch = 'y') +
+  labs(x = 'Models ordered by Odds Ratio', y = '', title = '') +
+  theme(axis.ticks.y = element_blank()) + 
+  scale_color_manual(values = myColors, breaks = c('yes_high', 'yes_low', 'no'))
+
+
+predict_stb_plot = cowplot::plot_grid(predict_stb_top, predict_stb_bottom, 
+  nrow=2,
+  align = 'v', axis = 'lr', labels = 'PREDICT')
+
+cowplot::save_plot(predict_stb_plot, file = '../figures/supplemental/predict_stb_multiverse.png',
+  base_height = 8, base_width = 8)
+
+
+combined_stb_multiverse = cowplot::plot_grid(maps_stb_plot, predict_stb_plot,
+                                             nrow = 1)
+
+
+cowplot::save_plot(combined_stb_multiverse, file = '../figures/supplemental/combined_stb_multiverse.png',
+                   base_height = 8, base_width = 8)
+```
+# SI Multiverses
+
+```{r}
+start_time = Sys.time()
+maps_si_multiverse = specr::specr(maps_si_specs)
+
+save(maps_si_multiverse, file = '../model_outputs_step2/multiverses/maps_si_multiverse.rda')
+
+predict_si_multiverse = specr::specr(predict_si_specs)
+save(predict_si_multiverse, file = '../model_outputs_step2/multiverses/predict_si_multiverse.rda')
+
+
+```
+
+```{r}
+
+maps_si_multiverse_data = maps_si_multiverse$data %>%
+  mutate(cov_site = ifelse(grepl('SITE', controls), '|', ''),
+         cov_age = ifelse(grepl('age', controls), '|', ''),
+         cov_sex = ifelse(grepl('sex', controls), '|', ''),
+         cov_os = ifelse(grepl('iPhone', controls), '|', ''),
+         exclusions = ifelse(subsets=='1', '|', ''),
+         rank = rank(estimate),
+         or = exp(estimate),
+         or_high = exp(conf.high),
+         or_low = exp(conf.low),
+         sig = case_when(
+          or_high > 1 & or_low > 1 ~ 'yes_high',
+          or_high < 1 & or_low < 1 ~ 'yes_low',
+          TRUE ~ 'no'
+         ))
+
+names(myColors) <- levels(maps_si_multiverse_data$sig)
+colScale <- scale_colour_manual(name = "sig",values = myColors)
+
+maps_si_multiverse_long = maps_si_multiverse_data %>%
+  pivot_longer(cols = c('cov_site', 'cov_age', 'cov_sex', 'cov_os', 'exclusions'))
+
+maps_si_multiverse_long = mutate(maps_si_multiverse_long,
+  name = dplyr::recode(name,
+    'cov_site'='Covarite\nSite',
+    'cov_sex'='Covariate\nSex',
+    'cov_age'='Covariate\nAge',
+    'cov_os'='Covariate\nOS',
+    'exclusions'='>=1000\nEntries'
+  )
+)
+
+maps_si_top = ggplot(maps_si_multiverse_data, aes(x = rank, y = or, color = sig)) +
+  geom_hline(yintercept = 1, lty = 2) + 
+  geom_point() + 
+  geom_errorbar(aes(ymin = or_low, ymax = or_high), width = 0) +
+  labs(title = '', x= NULL, y = 'Associated with Baseline Ideation\nOdds Ratio (+1SD)') + 
+  theme(legend.position = 'none') + 
+  scale_color_manual(values = myColors, breaks = c('yes_high', 'yes_low', 'no'))
+
+
+maps_si_bottom = ggplot(maps_si_multiverse_long, aes(x = rank, y = '')) +
+  geom_text(aes(label = value)) +
+  facet_grid(rows = vars(name), switch = 'y') +
+  labs(x = 'Models ordered by Odds Ratio', y = '', title = '') +
+  theme(axis.ticks.y = element_blank(),
+        legend.position = 'none') + 
+  scale_color_manual(values = myColors, breaks = c('yes_high', 'yes_low', 'no'))
+
+
+maps_si_plot = cowplot::plot_grid(maps_si_top, maps_si_bottom, 
+  nrow=2,
+  align = 'v', axis = 'lr', labels = 'MAPS')
+
+
+
+predict_si_multiverse_data = predict_si_multiverse$data %>%
+  mutate(cov_site = ifelse(grepl('site', controls), '|', ''),
+         cov_age = ifelse(grepl('age', controls), '|', ''),
+         cov_sex = ifelse(grepl('gender', controls), '|', ''),
+         cov_os = ifelse(grepl('OS', controls), '|', ''),
+         exclusions = ifelse(subsets=='1', '|', ''),
+         rank = rank(estimate),
+         or = exp(estimate),
+         or_high = exp(conf.high),
+         or_low = exp(conf.low),
+         sig = case_when(
+          or_high > 1 & or_low > 1 ~ 'yes_high',
+          or_high < 1 & or_low < 1 ~ 'yes_low',
+          TRUE ~ 'no'
+         ))
+
+predict_si_multiverse_long = predict_si_multiverse_data %>%
+  pivot_longer(cols = c('cov_site', 'cov_age', 'cov_sex', 'cov_os', 'exclusions'))
+
+predict_si_multiverse_long = mutate(predict_si_multiverse_long,
+  name = dplyr::recode(name,
+    'cov_site'='Covarite\nSite',
+    'cov_sex'='Covariate\nSex',
+    'cov_age'='Covariate\nAge',
+    'cov_os'='Covariate\nOS',
+    'exclusions'='>=1000\nEntries'
+  )
+)
+
+predict_si_top = ggplot(predict_si_multiverse_data, aes(x = rank, y = or, color = sig)) +
+  geom_hline(yintercept = 1, lty = 2) + 
+  geom_point() + 
+  geom_errorbar(aes(ymin = or_low, ymax = or_high), width = 0) +
+  labs(title = '', x= NULL, y = 'Associated with Baseline Ideation\nOdds Ratio (+1SD)') +
+  theme(legend.position = 'none') + 
+  scale_color_manual(values = myColors, breaks = c('yes_high', 'yes_low', 'no'))
+
+
+predict_si_bottom = ggplot(predict_si_multiverse_long, aes(x = rank, y = '')) +
+  geom_text(aes(label = value)) +
+  facet_grid(rows = vars(name), switch = 'y') +
+  labs(x = 'Models ordered by Odds Ratio', y = '', title = '') +
+  theme(axis.ticks.y = element_blank()) + 
+  scale_color_manual(values = myColors, breaks = c('yes_high', 'yes_low', 'no'))
+
+
+predict_si_plot = cowplot::plot_grid(predict_si_top, predict_si_bottom, 
+  nrow=2,
+  align = 'v', axis = 'lr', labels = 'PREDICT')
+
+
+combined_si_multiverse = cowplot::plot_grid(maps_si_plot, predict_si_plot,
+                                             nrow = 1)
+
+
+cowplot::save_plot(combined_si_multiverse, file = '../figures/supplemental/combined_si_multiverse.png',
+                   base_height = 8, base_width = 8)
+```
+

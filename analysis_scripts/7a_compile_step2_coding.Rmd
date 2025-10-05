@@ -1,0 +1,232 @@
+---
+title: "Compile Stage 2 MAPS Human Content Coding"
+author: "Paul Alexander Bloom"
+date: "2025-05-13"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(purrr)
+library(tidytext)  
+library(stringr)   
+library(glmmTMB)
+library(wordcloud)
+library(tm)
+library(wordcloud)
+library(RColorBrewer)
+```
+
+# Pull in coded files
+
+```{r}
+files = dir(path = '/Volumes/AUERBACHLAB/Columbia/MAPS_Language/data/manual_coding/suicide_language/step_two_coding/coded_csv/', full.names = TRUE)
+
+coders = read.csv('../../../data/manual_coding/suicide_language/step_two_coding/step2_coding_delegation.csv')
+
+
+coders %>%
+  group_by(completed1) %>%
+  summarise(n_subjects = n(),
+            n_flagged = sum(n_flagged))
+
+start_totals = coders %>%
+  group_by(coder1) %>%
+  summarise(start_total = sum(n_flagged))
+coding_status = coders %>%
+  dplyr::filter(completed1==1) %>%
+  group_by(coder1) %>%
+  summarise(n_subjects = n(),
+            n_flags = sum(n_flagged))
+```
+
+
+```{r}
+id_codes = read.csv('logs/id_codes.csv')
+
+for (i in 1:length(files)){
+  print(files[i])
+  tmp = read.csv(files[i])
+  
+  if (('X') %in% names(tmp)){
+    tmp = dplyr::select(tmp, -X)
+  }
+  
+  if ("text_preproc" %in% names(tmp)) names(tmp)[names(tmp) == "text_preproc"] <- "text_clean"
+  if(i ==1){
+    df = tmp
+    df = df %>%
+    distinct(id_app, tm_message_start, tm_message_end, text_clean, .keep_all = TRUE)
+  }else{
+    df = rbind(df, tmp)
+  }
+}
+
+# Clean up mistake keystrokes
+df = dplyr::left_join(df, dplyr::select(id_codes, id, id_coded))
+df = mutate(df, suicide_related = as.numeric(ifelse(suicide_related == '`', 1, suicide_related)))
+
+missed = df %>%
+  dplyr::filter(flagged == 1 & suicide_related =="")
+
+```
+
+# Calculate stats on full data
+```{r}
+flagged = df %>% dplyr::filter(., flagged == 1)
+
+false_positives = df %>%
+  dplyr::filter(flagged == 1 & suicide_related ==0)
+
+true_positives = df %>%
+  dplyr::filter(flagged == 1 & suicide_related ==1)
+
+fp_rate = nrow(false_positives)/ nrow(flagged)
+
+precision = nrow(true_positives)/nrow(flagged)
+
+table(true_positives$timing)
+
+base_rate = sum(df$suicide_related, na.rm = TRUE)/nrow(df)
+
+length(unique(flagged$id))
+
+save(df, flagged, false_positives, true_positives, file='../data_stage2/coded_stage2_data.rda')
+
+
+save(true_positives, file = 'true_positives_nospellcorrection.rda')
+
+names(flagged)
+
+
+```
+
+# Coding for spell-corrected pipeline
+
+Stage 2 coding was initially done with preproc data prior to spell correction
+A small second round of coding is needed for entries not originally coded (e.g., only flagged via the spell-corrected pipeline)
+
+```{r}
+# FINAL indicates spell-correction ('preproc' files are not spell-corrected)
+processed = read_csv('../data_stage2/maps_flagged_vs_predict_final_2025-07-28.csv')
+
+processed = mutate(processed, id = as.numeric(basename(dirname(filepath)))) %>%
+  distinct()
+
+df2 = mutate(df, 
+             tm_message_start= as.POSIXct(tm_message_start, format = "%Y-%m-%dT%H:%M:%S", tz = "UTC"),
+             tm_message_end= as.POSIXct(tm_message_end, format = "%Y-%m-%dT%H:%M:%S", tz = "UTC")) %>%
+  dplyr::select(-text_clean) %>% 
+  distinct()
+
+processed = left_join(processed, df2, by = c('id_app', 'tm_message_start', 'tm_message_end', 'id'))
+
+
+processed = mutate(processed, flag_final_no_emojis = ifelse(suicide_lexicon_custom_token ==1 |
+                                                            celeb_historical_suicide_token == 1|
+                                                            suicide_lexicon_custom_pairs ==1,1,0),
+                   flag_final_emojis = ifelse(suicide_lexicon_custom_token ==1 |
+                                                            celeb_historical_suicide_token == 1|
+                                                            suicide_lexicon_custom_pairs ==1 |
+                    emoji_flag == 1, 1, 0)
+                   ) %>%
+  dplyr::select(-id_coded)
+
+processed = left_join(processed, id_codes %>% dplyr::select(id, id_coded), by = 'id')
+
+processed_log = processed %>% group_by(id, id_coded) %>%
+  summarise(newly_flagged_num = sum( flag_final_no_emojis ==1 & is.na(suicide_related))) %>%
+  dplyr::filter(newly_flagged_num > 0)
+
+# Assign randomized IDs for new participants that need coding entries
+set.seed(123) # for reproducibility
+processed_log <- processed_log %>%
+  mutate(id_coded = ifelse(is.na(id_coded),
+                           sample(900:999, sum(is.na(id_coded)), replace = TRUE),
+                           id_coded))
+
+processed_log = mutate(processed_log, coder = '', completed1= '') %>% 
+  dplyr::arrange(-newly_flagged_num)
+
+processed = left_join(processed %>% dplyr::select(-id_coded), processed_log %>% dplyr::select(-newly_flagged_num, -coder, -completed1), by = 'id')
+
+
+processed_nolonger_flagged = dplyr::filter(processed, flag_final_no_emojis ==0 & flagged ==1)
+
+processed_flagged_missed = dplyr::filter(processed, flag_final_no_emojis ==1 & is.na(suicide_related))
+
+```
+
+
+# For coding entries only flagged after spell-correction / translation 
+
+Commented out as there is no need to re-run for analysis
+```{r}
+
+# 
+# write.csv(processed_flagged_missed, file = '../../../data/manual_coding/suicide_language/step_two_spellcheck_translation/flagged_only_afterspellcheck.csv')
+# 
+# 
+# ids_for_recode = unique(processed_flagged_missed$id)
+# 
+# for (id_to_recode in ids_for_recode){
+#   recode_df = dplyr::filter(processed, id == id_to_recode)
+#   recode_df = dplyr::select(recode_df, corrected_message, tm_message_start, tm_message_end, id_message, id_row, flagged, flag_final_no_emojis, suicide_related:other, everything())
+#   write.csv(recode_df, paste0('../../../data/manual_coding/suicide_language/step_two_spellcheck_translation/uncoded_csv/', recode_df$id_coded[1], '_flagged.csv'))
+# }
+# 
+# 
+# processed_log %>% ungroup() %>% dplyr::select(-id) %>% write.csv(., file = '../../../data/manual_coding/suicide_language/step_two_spellcheck_translation/spellcheck_delegation.csv', row.names=FALSE)
+# 
+# 
+# 
+# length(unique(processed_flagged_missed$id))
+# 
+# full_codings = processed %>%
+#   mutate(suicide_related = ifelse(is.na(suicide_related), 0, suicide_related))
+# 
+# save(full_codings, file = paste0('../data_stage2/maps_full_codings', Sys.Date(), '.rda'))
+# 
+# sum(is.na(processed$suicide_related))
+```
+
+# Re-join stage 2 human codings, save out final codings for analysis
+
+```{r}
+files_final_coded = dir(path = '/Volumes/AUERBACHLAB/Columbia/MAPS_Language/data/manual_coding/suicide_language/step_two_spellcheck_translation/coded_csv/', full.names = TRUE, pattern = '*.csv')
+
+spellcheck_recoded = map_dfr(
+  files_final_coded,
+  ~ read_csv(.x, col_types = cols(timing = col_character()))
+)
+
+
+recode_not_needed = dplyr::filter(processed, ! id %in% unique(spellcheck_recoded$id))
+
+length(unique(spellcheck_recoded$id))
+length(unique(recode_not_needed$id))
+
+
+
+
+final_spellcheck_codings = plyr::rbind.fill(spellcheck_recoded, recode_not_needed)
+
+
+save(final_spellcheck_codings, file = '../data_stage2/maps_full_codings_spellchecked.rda')
+
+total_flagged = final_spellcheck_codings %>%
+  dplyr::filter(flag_final_no_emojis ==1) %>% nrow()
+
+base_rate = total_flagged / nrow(final_spellcheck_codings)
+
+final_spellcheck_codings %>%
+  dplyr::filter(flag_final_no_emojis ==1) %>%
+  group_by(suicide_related) %>%
+  summarise(n=n(), prop = n/total_flagged)
+
+```
+

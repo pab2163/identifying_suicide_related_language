@@ -1,0 +1,141 @@
+---
+title: "Assemble Data for Stage 1 Manual Coding"
+author: "Paul A. Bloom"
+date: "2025-03-25"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+```
+
+# Pull dataset of 5% of MAPS data (11 participants)
+
+```{r}
+load('../../../data/Preprocessed/MAPS_id_utf8recode_Preprocessed_Sanitized_Untranslated_03_21_25.RData')
+
+
+df_id_utf8recode = finalmessages
+
+# training dataset for lexicon development (first 12000 entries, not included in validation set)
+train_12000 = df_id_utf8recode %>% head(12000) 
+write.csv(train_12000, '../../../data/Preprocessed/MAPS_id_utf8recode_Preprocessed_Sanitized_Untranslated_03_21_25_first_12000.csv', row.names = FALSE)
+
+load('../../../data/Preprocessed/MAPS_Language_Preprocessed_Sanitized_Untranslated_03_11_25.RData')
+
+
+# Delegate
+to_code = rbind(df_id_utf8recode, finalmessages)
+
+subids = unique(to_code$subjectID)
+subids
+
+by_id = to_code %>%
+  group_by(subjectID) %>%
+  count()
+
+```
+
+
+```{r}
+#to_code = dplyr::left_join(to_code, subject_mapping ,by = 'subjectID')
+
+to_code_cleaned = dplyr::select(to_code, subjectID, tm_message_start, tm_message_end, timeDiff, id_app, text_clean)
+to_code_cleaned$suicide_related = ''
+
+#write.csv(to_code_cleaned, '/Volumes/columbia/MAPS_Language/data/manual_coding/suicide_language/step_one_coding/step_one_coder_pb.csv', row.names = FALSE)
+#write.csv(to_code_cleaned, '/Volumes/columbia/MAPS_Language/data/manual_coding/suicide_language/step_one_coding/step_one_coder_jg.csv', row.names = FALSE)
+#write.csv(to_code_cleaned, '/Volumes/columbia/MAPS_Language/data/manual_coding/suicide_language/step_one_coding/step_one_coder_in.csv', row.names = FALSE)
+#write.csv(to_code_cleaned, '/Volumes/columbia/MAPS_Language/data/manual_coding/suicide_language/step_one_coding/step_one_coder_np.csv', row.names = FALSE)
+
+```
+
+# First 12000 coded message (not included in validation) for model development
+```{r}
+
+coded = read.csv('/Volumes/columbia/MAPS_Language/data/manual_coding/suicide_language/step_one_coding/coded_reconverted_csvs/step_one_coded_pb.csv') %>%
+    head(12000)
+
+coded = coded %>%
+    mutate(suicide_related = ifelse(is.na(suicide_related), 0, suicide_related))
+
+write.csv(coded, '../../../data/Preprocessed/MAPS_id_utf8recode_Preprocessed_Sanitized_Untranslated_03_21_25_first_12000_coded.csv', row.names = FALSE)
+
+```
+
+# Raw and hashed data for head-to-head
+
+# Raw
+
+```{r}
+
+# Define the subdirectories
+subdirs <- ID_LIST
+
+# Define the pattern you're looking for in the filenames (e.g., "survey")
+pattern <- "KeyInput_message"  # replace with the actual string to match in filenames
+
+# Initialize an empty list to store dataframes
+df_list <- list()
+
+# Loop over each subdirectory
+for (subdir in subdirs) {
+  # Construct full path
+  full_path <- file.path("/Volumes/AUERBACHLAB/Columbia/MAPS_Language/data/KeyInput/", subdir)
+  
+  # List files in the subdirectory that contain the pattern
+  files <- list.files(full_path, pattern = pattern, full.names = TRUE)
+  
+  # Read each matching file and add to the list
+  for (file in files) {
+    df <- read.csv(file, stringsAsFactors = FALSE)
+    df$subjectID = subdir
+    df_list[[length(df_list) + 1]] <- df
+  }
+}
+
+# Combine all dataframes into one
+combined_df <- do.call(rbind, df_list)
+
+write.csv(combined_df, file = '/Volumes/AUERBACHLAB/Columbia/MAPS_Language/data/Preprocessed/for_srl_head_to_head/raw.csv',
+          row.names=FALSE)
+
+```
+
+# Preprocessed (Not translated)
+
+```{r}
+rm(df, df_list, combined_df)
+# Define the subdirectories
+subdirs <- c(ID_LIST)
+
+# Define the pattern you're looking for in the filenames (e.g., "survey")
+pattern <- "Preprocessed_2025_04_30.csv"  # replace with the actual string to match in filenames
+
+# Initialize an empty list to store dataframes
+df_list <- list()
+
+# Loop over each subdirectory
+for (subdir in subdirs) {
+  # Construct full path
+  full_path <- file.path("/Volumes/AUERBACHLAB/Columbia/MAPS_Language/data/KeyInput/", subdir)
+  
+  # List files in the subdirectory that contain the pattern
+  files <- list.files(full_path, pattern = pattern, full.names = TRUE)
+  
+  # Read each matching file and add to the list
+  for (file in files) {
+    df <- read.csv(file, stringsAsFactors = FALSE)
+    df$subjectID = subdir
+    df_list[[length(df_list) + 1]] <- df
+  }
+}
+
+# Combine all dataframes into one
+combined_df <- do.call(rbind, df_list)
+
+write.csv(combined_df, file = '/Volumes/AUERBACHLAB/Columbia/MAPS_Language/data/Preprocessed/for_srl_head_to_head/ .csv',
+          row.names=FALSE)
+
+```

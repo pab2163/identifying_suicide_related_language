@@ -1,0 +1,143 @@
+---
+title: "Delegate Content Label Coding for MAPS Stage 2"
+author: "Paul Alexander Bloom"
+date: "2025-05-13"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+```
+
+```{r}
+stage2_log = read.csv('logs/srl_flag_log_2025-05-16.csv')
+names(stage2_log)
+
+stage2_log = dplyr::filter(stage2_log, status == 'success', n_flagged > 0)
+```
+
+# Recode the IDs so that coders do not know clinical status
+```{r}
+if (!file.exists('logs/id_codes.csv')){
+  stage2_log$id_coded = sample(1:length(unique(stage2_log$id)), replace = FALSE)
+  write.csv(stage2_log, file = 'logs/id_codes.csv', row.names=FALSE)
+  write.csv(stage2_log, file = 'id_codes.csv', row.names=FALSE)
+}else{
+  print('Codes already exist! Not making new ones')
+  stage2_log = read.csv('logs/id_codes.csv')
+}
+
+```
+
+# Assign coders
+
+```{r}
+assign_coders <- function(df, coders) {
+  # Filter rows where status is "success"
+  df <- df[df$status == "success", ]
+  
+  # Order rows by n_flagged descending to use greedy assignment
+  df <- df[order(-df$n_flagged), ]
+  
+  # Initialize a list to store assignments
+  assignments <- rep(NA, nrow(df))
+  
+  # Track total n_flagged per coder
+  coder_totals <- setNames(rep(0, length(coders)), coders)
+  
+  for (i in seq_len(nrow(df))) {
+    # Find the coder with the lowest current total
+    best_coder <- names(which.min(coder_totals))
+    
+    # Assign this row to that coder
+    assignments[i] <- best_coder
+    
+    # Update that coder's total
+    coder_totals[best_coder] <- coder_totals[best_coder] + df$n_flagged[i]
+  }
+  
+  # Add assignments to the dataframe
+  df$coder <- assignments
+  
+  return(df)
+}
+
+coder_names = c('paul_bloom', 'bella_nadel', 'emma_wool', 'natalia_parjane', 'julia_greenblatt')
+coders = assign_coders(df = stage2_log, coders = coder_names)
+
+coders %>% group_by(coder) %>% summarise(total_subs = sum(n_flagged !=0), 
+                                         total_flagged = sum(n_flagged))
+
+# write linked / unlinked coder files
+#coders %>% write.csv('logs/coders_with_links.csv')
+# coders %>% dplyr::select(id_coded, n_flagged, coder1=coder) %>% 
+#   mutate(completed1 = '') %>%
+#   write.csv('/Volumes/columbia/MAPS_Language/data/manual_coding/suicide_language/step_two_coding/step2_coding_delegation.csv',
+#             row.names=FALSE)
+```
+
+# Make a copy of each subject's data - write out for coding
+```{r}
+flagfiles_path = '/Volumes/AUERBACHLAB/Columbia/MAPS_Language/data/srl_flagged/'
+preproc_basepath = '/Volumes/AUERBACHLAB/Columbia/MAPS_Language/data/KeyInput/'
+
+stage2_cols = c(
+  'suicide_related', 'timing', "jokes_hyperbole",
+  "first_si_passive", "first_si_active", "first_nssi_thought", "first_nssi_behav", 
+  "first_si_absence", "first_victim", "first_sb", "first_lifehate", 
+  "first_helpseek", "first_reason_living", "second_support", "second_victim", 
+  "second_si", "second_sb", "second_nssi", "third_support", "third_victim", 
+  "third_si", "third_sb", "third_nssi", "gaming", 
+  "lethal_means", "resources", "maps", "celeb", "media", "art", "unclear", "other"
+)
+
+for (id in stage2_log$id){
+  filepath = paste0(flagfiles_path, as.numeric(id), '_srl_flagged.csv')
+  preproc_filepath = dir(paste0(preproc_basepath, as.numeric(id)), 
+                         pattern = 'Preprocessed', 
+                         full.names = TRUE)
+  preproc = read.csv(preproc_filepath[1]) %>% dplyr::select(id_app, 
+                                                            tm_message_start,
+                                                            tm_message_end,
+                                                            text_clean)
+  
+  
+  print(filepath)
+  uncoded = read.csv(filepath)
+  
+  uncoded = left_join(uncoded, preproc, by = c('id_app', 'tm_message_start',
+                                                            'tm_message_end')) %>%
+    distinct(id_app, tm_message_start, tm_message_end, text_clean, .keep_all = TRUE)
+  
+  uncoded = dplyr::select(uncoded, id_message, id_row,
+                          tm_message_start, tm_message_end, 
+                          id_app,
+                          text_clean, 'flagged'='any_flagged')
+  
+  uncoded[, stage2_cols] = ''
+  
+  # pull in the preproc version of the text so the emojis show
+  
+  id_coded = as.numeric(stage2_log$id_coded[stage2_log$id==id])
+  uncoded$id_coded = id_coded
+  outpath = paste0('/Volumes/AUERBACHLAB/columbia/MAPS_Language/data/manual_coding/suicide_language/step_two_coding/uncoded_csv/',
+                   id_coded, '_flagged.csv')
+  
+  # only write the file if non-existant (avoid overwriting)
+  if (!file.exists(outpath)){
+    write.csv(uncoded, file = outpath, row.names = FALSE)
+  }else{
+    print(c(id_coded, 'already exists'))
+  }
+  
+  
+}
+
+
+```
+
+  

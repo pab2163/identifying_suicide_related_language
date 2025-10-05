@@ -1,0 +1,485 @@
+---
+title: "MAPS Coded Label Analyses as a function of STB"
+author: "Paul Alexander Bloom"
+date: "2025-05-13"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(purrr)
+library(glmmTMB)
+library(emmeans)
+library(lubridate)
+library(ggplot2)
+library(ggtext)
+options(scipen = 999)
+```
+
+# Load and clean/prep MAPS data
+```{r}
+maps_selfreport = read_csv('/Volumes/AUERBACHLAB/Columbia/MAPS_Data/Analysis/Wrangling/Self_Report/data/selfreport_07.11.2024.csv') %>% 
+  dplyr::select(ID, age, GROUP, Control, SSI19_i) 
+
+load('../data_stage2/maps_full_codings_spellchecked.rda')
+
+maps = mutate(final_spellcheck_codings, flag_bin = flag_final_no_emojis)
+rm(final_spellcheck_codings)
+gc()
+
+maps = maps %>%
+  distinct(text_clean, tm_message_start, tm_message_end, id_app, .keep_all = TRUE)
+
+maps = left_join(maps %>% dplyr::select(ID=id, everything()), maps_selfreport, by = 'ID')
+
+by_id_summary = maps %>%
+  group_by(ID)%>%
+  summarise(total_message = n(),
+            total_flagged = sum(flag_bin==1),
+            proportion_flagged = total_flagged/total_message)
+
+
+
+sum(maps$flag_bin)
+sum(maps$suicide_related, na.rm=TRUE)
+
+maps = maps %>%
+  group_by(ID)%>%
+  mutate(total_message = n()) %>%
+  ungroup()
+
+maps = mutate(maps, timing = tolower(timing))
+
+
+# Code key content categories as model outcomes
+maps = mutate(maps,
+                        current_first_person = case_when(
+                          first_si_active == 1 & 
+                            grepl('current', timing)  ~ 'Yes',
+                          first_si_active == 1 & 
+                            grepl('future', timing)  ~ 'Yes',
+                          first_sb == 1 & 
+                            grepl('current', timing)  ~ 'Yes',
+                          first_sb == 1 & 
+                            grepl('future', timing)  ~ 'Yes',
+                          first_helpseek == 1 & 
+                            grepl('current', timing)  ~ 'Yes',
+                          first_helpseek == 1 & 
+                            grepl('future', timing)  ~ 'Yes',
+                          TRUE ~ 'No'
+                        ),
+              currfirst = ifelse(current_first_person=='Yes', 1, 0),
+              jokes_hyperbole = ifelse(jokes_hyperbole=='1', 1, 0),
+              jokes_hyperbole = ifelse(is.na(jokes_hyperbole), 0, jokes_hyperbole),
+              first = case_when(
+                first_si_passive==1 | first_si_active == 1 | first_nssi_thought == 1 |
+                first_nssi_behav == 1 | first_si_absence ==1 | first_victim == 1 |
+                first_sb ==1 | first_lifehate == 1 | first_helpseek ==1 | 
+                first_reason_living == 1 ~ 1,
+              TRUE ~ 0
+              ),
+              second = case_when(second_support ==1 | second_victim ==1 |
+                                 second_si ==1 | second_sb == 1 | 
+                                 second_nssi ==1 ~ 1,
+              TRUE ~ 0),
+              third = case_when(third_support ==1 | third_victim ==1 |
+                                 third_si ==1 | third_sb == 1 | 
+                                 third_nssi ==1 ~ 1,
+                                TRUE ~ 0),
+              false_positive = case_when(
+                flag_bin ==1 & suicide_related == 0 ~ 1,
+                TRUE ~ 0
+              ),
+              support = case_when(second_support ==1 | third_support == 1 ~1, 
+                                  TRUE ~ 0))
+
+table(maps$currfirst)
+table(maps$jokes_hyperbole)
+
+# remove participants with fewer than 1000 entries
+maps = dplyr::filter(maps, total_message >= 1000)
+gc()
+
+
+maps_days = maps %>%
+  mutate(date = lubridate::date(tm_message_start)) %>%
+  group_by(ID, GROUP, Control, SSI19_i, age, date) %>%
+  summarise(daily_flagged = sum(flag_bin),
+            daily_count = n(), 
+            any_daily_flagged = ifelse(daily_flagged > 0, 1, 0)) %>%
+  ungroup() %>%
+  group_by(ID) %>%
+  mutate(total_count = n()) %>%
+  ungroup()
+
+
+outcome_variables = c('flag_bin', 'suicide_related', 'false_positive', 'jokes_hyperbole', 'currfirst', 'first', 'second', 'third', 'support')
+```
+
+# Model the content conglomerate category outcomes (e.g., `outcome_variables`)
+```{r}
+maps_long = maps %>%
+  dplyr::select(ID, age, SSI19_i, Control, all_of(outcome_variables)) %>%
+  mutate(SSI19_i_z = scale(SSI19_i),
+         stb = ifelse(Control==1, 0, 1)) %>%
+  pivot_longer(cols = all_of(outcome_variables))
+
+
+maps_nest = maps_long %>%
+  group_by(name) %>%
+  nest()
+
+
+maps_si_z_models = maps_nest %>%
+  mutate(model = purrr::map(data, ~glmmTMB(data = ., value ~ SSI19_i_z + age + (1|ID), 
+                                           family = binomial(link = 'logit'))),
+         coef = purrr::map(model, ~broom.mixed::tidy(., conf.int=TRUE))
+  )
+
+maps_stb_models = maps_nest %>%
+  mutate(model = purrr::map(data, ~glmmTMB(data = ., value ~ stb + age + (1|ID), 
+                                           family = binomial(link = 'logit'))),
+         coef = purrr::map(model, ~broom.mixed::tidy(., conf.int=TRUE, exponentiate=TRUE))
+  )
+
+
+maps_si_z_coef = maps_si_z_models %>% unnest(coef) %>%
+  dplyr::select(-model, -data) %>%
+  dplyr::filter(term == 'SSI19_i_z')
+
+maps_stb_or = maps_stb_models %>% unnest(coef) %>%
+  dplyr::select(-model, -data) %>%
+  dplyr::filter(term == 'stb')
+
+
+
+maps_si_z_coef <- mutate(maps_si_z_coef, 
+                      name_recode = dplyr::recode(name,
+                                                  flag_bin = 'Flagged By Lexicon',
+                                                  suicide_related = 'True Positive',
+                                                  false_positive = 'False Positive',
+                                                  jokes_hyperbole = 'Jokes/Hyperbole',
+                                                  currfirst = 'Current, 1st Person\n& Authentic',
+                                                  first = '1st-person',
+                                                  second = '2nd-person',
+                                                  third = '3rd-person',
+                                                  support = 'Supporting Other'),
+                      lex = ifelse(name=='flag_bin', 'Flagged By Lexicon', 'Flagged By Lexicon\n+ Human Coding'))
+
+maps_stb_or <- mutate(maps_stb_or, 
+                      name_recode = dplyr::recode(name,
+                                                  flag_bin = 'Flagged By Lexicon',
+                                                  suicide_related = 'True Positive',
+                                                  false_positive = 'False Positive',
+                                                  jokes_hyperbole = 'Jokes/Hyperbole',
+                                                  currfirst = 'Current, 1st Person\n& Authentic',
+                                                  first = '1st-person',
+                                                  second = '2nd-person',
+                                                  third = '3rd-person',
+                                                  support = 'Supporting Other'),
+                      lex = ifelse(name=='flag_bin', 'Flagged By Lexicon', 'Flagged By Lexicon\n+ Human Coding'))
+
+maps_stb_or %>% dplyr::select(name, estimate, conf.low, conf.high)
+maps_si_z_coef %>% dplyr::select(name, estimate, conf.low, conf.high)
+
+maps_si_coef_plot = ggplot(maps_si_z_coef, aes(x = name_recode, y = estimate, color = lex)) +
+  geom_hline(yintercept = 0, lty = 2) +
+  geom_point() + 
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0) +
+  coord_flip() +
+  theme_bw() +
+  labs(y = 'Association with Baseline Suicidal Ideation\nLogistic Regression Beta', x=NULL, color = NULL) 
+
+maps_stb_or_plot = ggplot(maps_stb_or, aes(x = name_recode, y = estimate, color = lex)) +
+  geom_hline(yintercept = 1, lty = 2) +
+  geom_point() + 
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0) +
+  coord_flip() +
+  theme_bw() +
+  labs(y = 'STB > Psychiatric Control\nOdds Ratio', x=NULL, color = NULL) +
+  scale_y_log10() +
+  theme(legend.position = 'none')
+
+ggsave(maps_si_coef_plot, file = '../figures/supplemental/labels_si_plot_nospellcheck.png')
+ggsave(maps_stb_or_plot, file = '../figures/supplemental/labels_or_plot_nospellcheck.png')
+
+
+labels_stb_grid = cowplot::plot_grid(maps_stb_or_plot,maps_si_coef_plot,
+                   rel_widths = c(1, 1.4), labels = c('A', 'B'))
+
+
+cowplot::save_plot(labels_stb_grid, file = '../figures/supplemental/labels_stb_plot.png',
+                   base_height = 6, base_width = 9)
+
+
+save(maps_stb_or, maps_si_z_coef, file = '../model_outputs_step2/maps_coded_models.rda')
+```
+
+# Models for individual labels
+
+```{r}
+# Vector of binary column names
+binary_cols <- c(
+  "jokes_hyperbole", "first_si_passive", "first_si_active",
+  "first_nssi_thought", "first_nssi_behav", "first_si_absence",
+  "first_victim", "first_sb", "first_lifehate", "first_helpseek",
+  "first_reason_living", "second_support", "second_victim", "second_si",
+  "second_sb", "second_nssi", "third_support", "third_victim", "third_si",
+  "third_sb", "third_nssi", "gaming", "lethal_means", "resources",
+  "maps", "celeb", "media", "art", "unclear", "other"
+)
+
+# convert NAS to 0s
+maps[binary_cols] <- lapply(maps[binary_cols], function(x) {
+  x[x == "" | is.na(x)] <- 0      # Convert NA or blank string to 0
+  as.numeric(x)                  # Convert to numeric if not already
+})
+
+
+maps_binary = maps %>%
+  dplyr::select(ID, age, SSI19_i, Control, GROUP, all_of(binary_cols)) %>%
+  mutate(SSI19_i_z = scale(SSI19_i),
+         stb = ifelse(Control==1, 0, 1)) %>%
+  pivot_longer(cols = all_of(binary_cols))
+
+maps_binary_nest = maps_binary %>%
+  group_by(name) %>%
+  nest()
+
+
+maps_binary_for_descrip = maps_binary %>%
+  group_by(ID, name, stb, GROUP, SSI19_i) %>%
+  summarise(count = n(), 
+            positives = sum(value>0),
+            rate = 1000*positives/count)
+
+
+coding_labels = read.csv('../data_stage2/coding_labels.csv')
+
+```
+
+
+# Descriptive Plot of differences on the basis of STB
+```{r}
+maps_binary_for_descrip = left_join(maps_binary_for_descrip, coding_labels, by = 'name')
+
+
+maps_binary_for_descrip = maps_binary_for_descrip %>% mutate(
+    panel = case_when(
+      str_detect(name, "first") ~ "1st Person",
+      str_detect(name, "second") ~ "2nd Person",
+      str_detect(name, "third") ~ "3rd Person",
+      TRUE ~ "General"
+    ))
+
+
+maps_binary_labels_unweighted = maps_binary_for_descrip %>%
+  dplyr::filter(! name %in% c('second_nssi', 'third_nssi', 'art')) %>% # Not frequent enough for comparison
+  mutate(stb = ifelse(stb == 1, 'Lifetime STB', 'No STB History')) %>%
+  ggplot(data = ., aes(x = label, y = rate, color = stb)) +
+  stat_summary(fun.data = mean_cl_boot, position = position_dodge(0.1)) +
+  coord_flip() +
+  theme_bw() +
+  labs(y = 'Rate of Flagged Text Per 1000 Entries\nUnweighted Group Averages',
+       color = NULL, x = NULL) +
+  facet_grid(rows = vars(panel), scales = 'free_y') +
+  scale_color_viridis_d(end = 0.8)
+
+
+
+ggsave(maps_binary_labels_unweighted, 
+       file = '../figures/supplemental/labels_stb_plot_all_categories_descriptive.png', 
+       height = 9, width = 7)
+
+check_sb= maps_binary_for_descrip %>%
+  mutate(stb = ifelse(stb == 1, 'Lifetime STB', 'No STB History')) %>%
+  dplyr::filter(name == 'first_sb')
+
+suicidal_behavior_language_descrip = check_sb %>%
+  ggplot(data = ., aes(x = stb, y = rate, color = stb)) +
+  geom_boxplot(outlier.shape=NA) + 
+  geom_jitter(height = 0, width = 0.15, alpha = 0.5) +
+  labs(y = 'Entries Labled as Referencing Suicidal Behavior\nFrequency Per 1000 Entries',
+       x = NULL, 
+       color = NULL) +
+  theme_bw() +
+  scale_color_viridis_d(end = 0.8)
+
+ggsave(suicidal_behavior_language_descrip, 
+       file = '../figures/supplemental/labels_suicidal_behavior_descrip.png', 
+       height = 5, width = 5)
+
+c = maps_binary_for_descrip %>%
+  dplyr::filter(name == 'first_sb') %>%
+  mutate(stb = ifelse(stb == 1, 'Lifetime STB', 'No STB History'))%>%
+  group_by(ID, stb) %>%
+  summarise(nonzero = ifelse(rate>0, 1, 0)) 
+
+c %>%
+  group_by(stb) %>%
+  summarise(sum_nonzero = sum(nonzero),
+            pct_nonzero = 100*sum_nonzero/n(),
+            n=n())
+  
+
+suicidal_behavior_language_descrip_si = maps_binary_for_descrip %>%
+  dplyr::filter(name %in% c('first_sb')) %>% 
+  ggplot(data = ., aes(x = SSI19_i, y = rate)) +
+  stat_smooth(method = 'lm') +
+  geom_jitter(height = 0, width = 0.2) + 
+  theme_bw() +
+  labs(y = 'Entries Labled as Referencing Suicidal Behavior\nFrequency Per 1000 Entries',
+       color = NULL,
+       x = 'Baseline Suicidal Ideation') 
+
+ggsave(suicidal_behavior_language_descrip_si, 
+       file = '../figures/supplemental/labels_suicidal_behavior_descrip_si.png', 
+       height = 5, width = 5)
+
+
+```
+
+# Run the models! Takes a while
+
+```{r}
+rm(maps_binary)
+rm(maps)
+gc()
+
+maps_si_z_models_binary = maps_binary_nest %>%
+  mutate(model = purrr::map(data, ~glmmTMB(data = ., value ~ SSI19_i_z + age + (1|ID), 
+                                           family = binomial(link = 'logit'))),
+         coef = purrr::map(model, ~broom.mixed::tidy(., conf.int=TRUE, exponentiate=TRUE))
+  )
+maps_si_z_or_all_categories = maps_si_z_models_binary %>% unnest(coef) %>%
+  dplyr::select(-model, -data) %>%
+  dplyr::filter(term == 'SSI19_i_z')
+
+
+```
+
+```{r}
+rm(maps_si_z_models_binary)
+gc()
+
+
+maps_stb_models_binary = maps_binary_nest %>%
+  mutate(model = purrr::map(data, ~glmmTMB(data = ., value ~ stb + age + (1|ID), 
+                                           family = binomial(link = 'logit'))),
+         coef = purrr::map(model, ~broom.mixed::tidy(., conf.int=TRUE, exponentiate=TRUE))
+  )
+maps_stb_or_all_categories = maps_stb_models_binary %>% unnest(coef) %>%
+  dplyr::select(-model, -data) %>%
+  dplyr::filter(term == 'stb')
+
+rm(maps_stb_models_binary)
+
+gc()
+
+```
+
+
+```{r}
+coding_labels = read.csv('../data_stage2/coding_labels.csv')
+
+maps_si_z_or_all_categories = left_join(maps_si_z_or_all_categories, coding_labels, by = 'name')
+maps_stb_or_all_categories = left_join(maps_stb_or_all_categories, coding_labels, by = 'name')
+
+
+maps_si_z_or_all_categories = maps_si_z_or_all_categories %>% mutate(
+    panel = case_when(
+      str_detect(name, "first") ~ "1st Person",
+      str_detect(name, "second") ~ "2nd Person",
+      str_detect(name, "third") ~ "3rd Person",
+      TRUE ~ "General"
+    ))
+
+
+maps_stb_or_all_categories = maps_stb_or_all_categories %>% mutate(
+    panel = case_when(
+      str_detect(name, "first") ~ "1st Person",
+      str_detect(name, "second") ~ "2nd Person",
+      str_detect(name, "third") ~ "3rd Person",
+      TRUE ~ "General"
+    ))
+
+
+save(maps_si_z_or_all_categories, maps_stb_or_all_categories, file = '../model_outputs_step2/maps_coded_models_allcategories.rda')
+```
+
+# Make OR Plots of human codings as a function of STB history / baseline SI
+
+
+```{r}
+load('../model_outputs_step2/maps_coded_models_allcategories.rda')
+
+sig_star_label <- function(df, lower_col, upper_col, boundary) {
+  df <- df %>%
+    mutate(sig_star = case_when(
+      {{ lower_col }} > boundary & {{ upper_col }} > boundary ~ '+',
+      {{ lower_col }} < boundary & {{ upper_col }} < boundary ~ '+',
+      TRUE ~ ''
+    ))
+  return(df)
+}
+
+
+maps_stb_or_all_categories = sig_star_label(maps_stb_or_all_categories, 
+                                            lower_col = conf.low,
+                                            upper_col = conf.high,
+                                            boundary = 1)
+
+maps_si_z_or_all_categories = sig_star_label(maps_si_z_or_all_categories, 
+                                            lower_col = conf.low,
+                                            upper_col = conf.high,
+                                            boundary = 1)
+
+all_categories_stb = maps_stb_or_all_categories %>%
+  dplyr::filter(! name %in% c('second_nssi', 'third_nssi', 'art')) %>%
+  ggplot(data=., aes(x = label, y = estimate, color= panel)) +
+  geom_hline(yintercept = 1, lty = 2) +
+  geom_point(size = 2) + 
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0, lwd = 1) +
+  geom_text(aes(label = sig_star, y = 0.05), size = 7, vjust = 0.3) +
+  facet_grid(rows = vars(panel), scales = 'free_y') + 
+  coord_flip() +
+  scale_y_log10() +
+  labs(y = 'Lifetime STB > No STB History\nOdds Ratio', x = NULL) +
+  theme_bw() +
+  theme(legend.position = 'none')
+
+all_categories_si = maps_si_z_or_all_categories %>%
+  dplyr::filter(! name %in% c('second_nssi', 'third_nssi', 'art')) %>%
+  ggplot(data =., aes(x = label, y = estimate, color = panel)) +
+  geom_hline(yintercept = 1, lty = 2) +
+  geom_point(size = 2) + 
+  geom_text(aes(label = sig_star, y = 0.1), size = 7, vjust = 0.3) +
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0, lwd = 1) +
+  facet_grid(rows = vars(panel), scales = 'free_y') + 
+  coord_flip() +
+  scale_y_log10() +
+  labs(y = 'Association with Baseline Suicidal Ideation\nOdds Ratio', x = NULL) +
+  theme_bw() +
+  theme(legend.position = 'none')
+
+maps_all_categories_stats_plt = cowplot::plot_grid(all_categories_stb, all_categories_si,
+                   labels = c('A', 'B'))
+
+cowplot::save_plot(maps_all_categories_stats_plt, 
+                   base_height = 9, base_width = 9,
+                   file = '../figures/supplemental/labels_stb_plot_all_categories.png')
+
+
+maps_stb_or_all_categories %>% dplyr::select(name, estimate, conf.low, conf.high) %>% write.csv('../model_outputs_step2/maps_stb_history_or_all_categories.csv', row.names=FALSE)
+maps_si_z_or_all_categories %>% dplyr::select(name, estimate, conf.low, conf.high)
+```
+
+
+```{r}
+
+
+```
