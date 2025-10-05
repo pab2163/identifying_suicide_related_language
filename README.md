@@ -42,7 +42,7 @@ The left column links directly to each script; descriptions can be added or edit
 | [7a_compile_step2_coding.Rmd](analysis_scripts/7a_compile_step2_coding.Rmd) | Compile human content codings of flagged entries in the MAPS cohort |
 | [7b_step2_coding_descriptives.Rmd](analysis_scripts/7b_step2_coding_descriptives.Rmd) | Descrriptive analyses of content category frequency among entries flagged by the Youth Suicide Lexicon in the MAPS cohort |
 | [8a_maps_coded_analyses.Rmd](analysis_scripts/8a_maps_coded_analyses.Rmd) | Analyses of human content labels as a function of lifetime STB history and baseline SI |
-| [8b_maps_human_vs_lexicon.Rmd](analysis_scripts/8b_maps_human_vs_lexicon.Rmd) |  |
+| [8b_maps_human_vs_lexicon.Rmd](analysis_scripts/8b_maps_human_vs_lexicon.Rmd) | Comparing the relative effect sizes of human coding versus lexicon flagging of text alone in associations with STB history or baseline SI |
 
 
 ## Youth Suicide Lexicon Files
