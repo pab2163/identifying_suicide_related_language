@@ -51,3 +51,6 @@ Lexicon resources are stored in the [`analysis_scripts/lexicon_data/`](analysis_
 
 More flexible code for using the lexicon is available at: https://github.com/pab2163/youth_suicide_lexicon
 
+## Lower-Level Keyboard Input Preprocessing Code:
+
+Code & matrials for keyboard input preprocessing can be found in a separate github repository [here.](https://github.com/pab2163/auerbach_nlp)
