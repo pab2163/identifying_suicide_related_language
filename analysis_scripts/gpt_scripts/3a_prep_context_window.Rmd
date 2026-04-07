@@ -1,0 +1,223 @@
+---
+title: "Prepare MAPS/PREDICT Flagged Entries for GPT Context Window Batch Analyses'
+author: "Paul Alexander Bloom"
+date: "2026-04-06"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(purrr)
+library(glmmTMB)
+library(emmeans)
+library(lubridate)
+library(ggplot2)
+library(ggtext)
+ library(data.table)
+options(scipen = 999)
+```
+
+# Load and clean/prep MAPS data
+```{r}
+load('../../data_stage2/maps_full_codings_spellchecked.rda')
+
+maps = mutate(final_spellcheck_codings, flag_bin = flag_final_no_emojis)
+rm(final_spellcheck_codings)
+gc()
+
+maps = maps %>%
+  distinct(text_clean, tm_message_start, tm_message_end, id_app, .keep_all = TRUE)
+
+```
+
+```{r}
+#' Format flagged messages with temporal context for GPT input
+#'
+#' For each flagged message in \code{df}, collects up to \code{max_messages}
+#' surrounding messages within a symmetric time window and formats them into a
+#' single prompt string suitable for batch classification.
+#'
+#' The output contains one row per flagged message. The \code{input_text} column
+#' is the primary prompt field: it places the focal message first, followed by
+#' all context messages in chronological order.
+#'
+#' @param df A data frame of messages. Must contain the columns named by the
+#'   \code{col_*} arguments. All other columns are treated as covariates and
+#'   passed through to the output unchanged.
+#' @param time_window_hours Numeric. Half-width of the context window in hours.
+#'   Messages within \code{[focal_time - window, focal_time + window]} are
+#'   eligible as context. Default \code{1}.
+#' @param max_messages Integer. Maximum number of messages to include per focal
+#'   event (including the focal message itself). When the window contains more
+#'   candidates, the closest messages by absolute time difference are kept.
+#'   Default \code{100}.
+#' @param col_timestamp Character. Name of the POSIXct timestamp column.
+#'   Default \code{"timestamp_datetime"}.
+#' @param col_app Character. Name of the column containing the app or source
+#'   label for each message. Default \code{"app_name"}.
+#' @param col_text Character. Name of the column containing message text.
+#'   Default \code{"text"}.
+#' @param col_flag Character. Name of the binary flag column
+#'   (\code{1} = focal message, \code{0} = context candidate).
+#'   Default \code{"flag_bin"}.
+#' @param col_id Character. Name of the participant identifier column.
+#'   Default \code{"participant_id"}.
+#'
+#' @return A tibble with one row per flagged message and the following columns,
+#'   in this order:
+#'   \describe{
+#'     \item{\code{<col_id>}}{Participant identifier (renamed from \code{.id}).}
+#'     \item{\code{<col_timestamp>}}{Timestamp of the focal message (renamed
+#'       from \code{.flagged_timestamp}).}
+#'     \item{\emph{extra columns}}{Any columns in \code{df} beyond the five
+#'       \code{col_*} arguments, passed through from the flagged-message row.}
+#'     \item{\code{n_messages}}{Total number of messages included (focal +
+#'       context).}
+#'     \item{\code{n_context}}{Number of context messages (excludes focal).}
+#'     \item{\code{focal_text}}{The focal message, formatted as
+#'       \code{[YYYY-MM-DD HH:MM | app] text}.}
+#'     \item{\code{context_text}}{All context messages in chronological order,
+#'       one per line, same format as \code{focal_text}.}
+#'     \item{\code{input_text}}{Ready-to-send prompt combining focal and context:
+#'       \preformatted{Focal message:\n<focal_text>\n\nContext:\n<context_text>}}
+#'   }
+#'   Returns an empty tibble with a message if no flagged messages are found.
+format_gpt_input_fast_focal = function(
+    df,
+    time_window_hours = 1,
+    max_messages      = 100,
+    col_timestamp     = "timestamp_datetime",
+    col_app           = "app_name",
+    col_text          = "text",
+    col_flag          = "flag_bin",
+    col_id            = "participant_id"
+) {
+  
+  required_cols = c(col_timestamp, col_app, col_text, col_flag, col_id)
+  missing_cols  = setdiff(required_cols, names(df))
+  if (length(missing_cols) > 0) {
+    stop("Missing columns in df: ", paste(missing_cols, collapse = ", "))
+  }
+  
+  window_secs = time_window_hours * 3600
+  
+  extra_cols = setdiff(names(df), c(col_timestamp, col_app, col_text, col_flag, col_id))
+  
+  df = df %>%
+    rename(
+      .timestamp = all_of(col_timestamp),
+      .app       = all_of(col_app),
+      .text      = all_of(col_text),
+      .flag      = all_of(col_flag),
+      .id        = all_of(col_id)
+    ) %>%
+    mutate(.row_ts_num = as.numeric(.timestamp))
+  
+  flagged = df %>%
+    filter(.flag == 1) %>%
+    select(.flagged_timestamp = .timestamp, .id, any_of(extra_cols)) %>%
+    mutate(
+      flagged_ts_num = as.numeric(.flagged_timestamp),
+      window_start   = flagged_ts_num - window_secs,
+      window_end     = flagged_ts_num + window_secs
+    )
+  
+  if (nrow(flagged) == 0) {
+    message("No flagged messages found.")
+    return(tibble())
+  }
+  
+  dt_messages = as.data.table(df)[, .(
+    .id, .row_ts_num,
+    .row_ts_num_end = .row_ts_num,
+    .app, .text
+  )]
+  
+  dt_flagged = as.data.table(flagged)
+  
+  setkey(dt_messages, .id, .row_ts_num, .row_ts_num_end)
+  setkey(dt_flagged,  .id, window_start, window_end)
+  
+  joined = foverlaps(
+    dt_messages,
+    dt_flagged,
+    by.x = c(".id", ".row_ts_num", ".row_ts_num_end"),
+    by.y = c(".id", "window_start", "window_end"),
+    type    = "within",
+    nomatch = 0
+  ) %>%
+    as_tibble()
+  
+  format_message = function(ts_num, app, text) {
+    sprintf(
+      "[%s | %s] %s",
+      format(as.POSIXct(ts_num, origin = "1970-01-01"), "%Y-%m-%d %H:%M"),
+      replace_na(as.character(app), "Unknown"),
+      text
+    )
+  }
+  
+  result = joined %>%
+    mutate(time_diff = abs(.row_ts_num - flagged_ts_num)) %>%
+    group_by(.id, .flagged_timestamp) %>%
+    slice_min(order_by = time_diff, n = max_messages, with_ties = FALSE) %>%
+    arrange(.id, .flagged_timestamp, .row_ts_num) %>%
+    mutate(
+      is_focal  = (.row_ts_num == flagged_ts_num),
+      formatted = format_message(.row_ts_num, .app, .text)
+    ) %>%
+    summarise(
+      n_messages      = n(),
+      n_context       = sum(!is_focal),
+      focal_text      = formatted[is_focal][1],   # take first if ties
+      context_text    = paste(formatted[!is_focal], collapse = "\n"),
+      input_text      = paste0(
+        "Focal message:\n", focal_text,
+        "\n\nContext:\n",   context_text
+      ),
+      .groups = "drop"
+    ) %>%
+    left_join(
+      select(flagged, .id, .flagged_timestamp, any_of(extra_cols)),
+      by = c(".id", ".flagged_timestamp")
+    ) %>%
+    rename(
+      !!col_id        := .id,
+      !!col_timestamp := .flagged_timestamp
+    ) %>%
+    relocate(
+      all_of(col_id), all_of(col_timestamp), any_of(extra_cols),
+      n_messages, n_context, focal_text, context_text, input_text
+    )
+  
+  result
+}
+
+
+```
+
+# MAPS
+```{r}
+
+gpt_inputs_focal = format_gpt_input_fast_focal(df=maps, time_window_hours = 1, max_messages = 100, 
+                              col_timestamp = 'tm_message_start', col_app = 'id_app', col_text = 'text_clean', col_flag = 'flag_bin', col_id = 'id')
+
+write.csv(gpt_inputs_focal, file = '../../data_stage2/fwhm_1hr_focal_maps_inputs_for_llm.csv', row.names=FALSE)
+```
+
+PREDICT
+```{r}
+predict = read_csv('../../data_stage2/predict_flagged_vs_maps_final_2025-08-11_with_id.csv')
+
+predict = dplyr::select(predict, entry_id, flag_bin, filepath, text_clean, tm_message_start, tm_message_end, id_app)
+
+gpt_inputs_focal_predict = format_gpt_input_fast_focal(df=predict, time_window_hours = 1, max_messages = 100, 
+                              col_timestamp = 'tm_message_start', col_app = 'id_app', col_text = 'text_clean', col_flag = 'flag_bin', col_id = 'filepath')
+
+write.csv(gpt_inputs_focal_predict, file = '../../data_stage2/fwhm_1hr_focal_predict_inputs_for_llm.csv', row.names=FALSE)
+
+```
