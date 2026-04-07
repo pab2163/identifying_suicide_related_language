@@ -13,20 +13,24 @@ library(tidyverse)
 # Pull dataset of 5% of MAPS data (11 participants)
 
 ```{r}
-load('../../../data/Preprocessed/MAPS_id_utf8recode_Preprocessed_Sanitized_Untranslated_03_21_25.RData')
+maps_ids = read.csv('maps_validation_ids.txt', header = FALSE)
+id_to_recode = as.character(maps_ids$V1[11])
+
+load(paste0('../../../data/Preprocessed/MAPS_', id_to_recode, '_Preprocessed_Sanitized_Untranslated_03_21_25.RData'))
 
 
-df_id_utf8recode = finalmessages
+df_id_to_recode = finalmessages
 
 # training dataset for lexicon development (first 12000 entries, not included in validation set)
-train_12000 = df_id_utf8recode %>% head(12000) 
-write.csv(train_12000, '../../../data/Preprocessed/MAPS_id_utf8recode_Preprocessed_Sanitized_Untranslated_03_21_25_first_12000.csv', row.names = FALSE)
+train_12000 = df_id_to_recode %>% head(12000) 
+write.csv(train_12000, paste0(
+  '../../../data/Preprocessed/MAPS_', id_to_recode, '_Preprocessed_Sanitized_Untranslated_03_21_25_first_12000.csv'), row.names = FALSE)
 
 load('../../../data/Preprocessed/MAPS_Language_Preprocessed_Sanitized_Untranslated_03_11_25.RData')
 
 
 # Delegate
-to_code = rbind(df_id_utf8recode, finalmessages)
+to_code = rbind(df_id_to_recode, finalmessages)
 
 subids = unique(to_code$subjectID)
 subids
@@ -60,7 +64,7 @@ coded = read.csv('/Volumes/columbia/MAPS_Language/data/manual_coding/suicide_lan
 coded = coded %>%
     mutate(suicide_related = ifelse(is.na(suicide_related), 0, suicide_related))
 
-write.csv(coded, '../../../data/Preprocessed/MAPS_id_utf8recode_Preprocessed_Sanitized_Untranslated_03_21_25_first_12000_coded.csv', row.names = FALSE)
+write.csv(coded, paste0('../../../data/Preprocessed/MAPS_', id_to_recode, '_Preprocessed_Sanitized_Untranslated_03_21_25_first_12000_coded.csv'), row.names = FALSE)
 
 ```
 
@@ -71,7 +75,7 @@ write.csv(coded, '../../../data/Preprocessed/MAPS_id_utf8recode_Preprocessed_San
 ```{r}
 
 # Define the subdirectories
-subdirs <- ID_LIST
+subdirs = as.numeric(maps_ids$V1)
 
 # Define the pattern you're looking for in the filenames (e.g., "survey")
 pattern <- "KeyInput_message"  # replace with the actual string to match in filenames
@@ -108,7 +112,7 @@ write.csv(combined_df, file = '/Volumes/AUERBACHLAB/Columbia/MAPS_Language/data/
 ```{r}
 rm(df, df_list, combined_df)
 # Define the subdirectories
-subdirs <- c(ID_LIST)
+subdirs <- as.numeric(maps_ids$V1)
 
 # Define the pattern you're looking for in the filenames (e.g., "survey")
 pattern <- "Preprocessed_2025_04_30.csv"  # replace with the actual string to match in filenames

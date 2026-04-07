@@ -10,7 +10,11 @@ With spell correction
 
 
 # List of IDs
-ids_validation = [ID_list]
+with open('maps_validation_ids.txt', 'r') as file:
+    ids_validation = file.readlines()
+
+# last id needs recoding for non-utf8
+id_needs_recode = ids_validation[-1]
 
 # Base path
 base_path = "/Volumes/AUERBACHLAB/Columbia/MAPS_Language/data/KeyInput"
@@ -28,10 +32,10 @@ for subject_id in ids_validation:
 # Concatenate all dataframes row-wise
 combined_df_spell = pd.concat(dfs, ignore_index=True)
 
-# Pull in separate file for id_utf8_recode to avoid non-utf8 issues
-spellid_utf8_recode = robust_read_csv('/Volumes/AUERBACHLAB/Columbia/MAPS_Language/data/Preprocessed/spell_correct/spell_correctedgpt/id_utf8_recode_full_with_pred_old.csv')
+# Pull in separate file for one participant to avoid non-utf8 issues
+spell_participant = robust_read_csv(f'/Volumes/AUERBACHLAB/Columbia/MAPS_Language/data/Preprocessed/spell_correct/spell_correctedgpt/{id_needs_recode}_full_with_pred_old.csv')
 
-combined_df_spell = pd.concat([combined_df_spell, spellid_utf8_recode], ignore_index=True)
+combined_df_spell = pd.concat([combined_df_spell, spell_participant], ignore_index=True)
 
 # youth suicide lexicon
 youth_lexicon_results_spell = flag_lexicon_custom(input_df=combined_df_spell, text_column='corrected_message')

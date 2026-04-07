@@ -1,5 +1,5 @@
 ---
-title: 'Prepare MAPS and WashU Data for Model Validation'
+title: 'Prepare MAPS, PREDICT, and WashU Data for Model Validation'
 author: "Paul Alexander Bloom"
 date: "2025-04-30"
 output: html_document
@@ -30,6 +30,62 @@ lexicon_spellchecked = dplyr::select(lexicon_spellchecked, id_app,
                                      contains('token'), contains('lexicon'),
                                      emoji_flag, emojis_found)
 
+```
+
+###  GPT4.o mini outputs
+
+```{r}
+gpt_files = dir('../model_outputs_step1/gpt/fewshot_v1/results/', full.names = TRUE)
+
+gpt = map_dfr(.x = gpt_files, .f = read_csv)
+gpt = dplyr::select(gpt, entry_id, id_app, subjectID, tm_message_start, tm_message_end,
+                    corrected_final, gpt=response)
+
+gpt = dplyr::rename(gpt, corrected_message = corrected_final)
+
+gpt = mutate(gpt,
+             tm_message_start = as.character(tm_message_start),
+             tm_message_end = as.character(tm_message_end),
+             gpt_code = case_when(
+               gpt == 'Yes' ~ 1,
+               gpt == 'No' ~ 0,
+               TRUE ~ NA_real_
+             ))
+
+
+sum(is.na(gpt$gpt_code))
+
+gpt = dplyr::select(gpt, -gpt)
+```
+
+###  GPT3.5-turbo outputs
+
+
+```{r}
+gpt3_files = dir('../model_outputs_step1/gpt/fewshot_v1_gpt3/results/', full.names = TRUE)
+
+gpt3 = map_dfr(.x = gpt3_files, .f = read_csv)
+gpt3 = dplyr::select(gpt3, entry_id, subjectID, gpt3=label)
+
+maps_gpt3_na = sum(is.na(gpt3$gpt3))
+
+gpt3 = mutate(gpt3,
+              gpt3_code = case_when(
+               gpt3 == 'Yes' ~ 1,
+               gpt3 == 'No' ~ 0,
+               TRUE ~ NA_real_
+             ))
+
+sum(is.na(gpt3$gpt3_code))
+
+gpt3 = dplyr::select(gpt3, -gpt3)
+
+
+gpt = left_join(gpt, gpt3, by = c('entry_id', 'subjectID'))
+```
+
+```{r}
+
 names(lexicon_spellchecked)[!names(lexicon_spellchecked) %in% c("subjectID", "tm_message_start", "tm_message_end", "id_app", "corrected_message")] =
   paste0(names(lexicon_spellchecked)[!names(lexicon_spellchecked) %in% c("subjectID", "tm_message_start", "tm_message_end", "id_app", "corrected_message")], "_spellchecked")
 
@@ -41,6 +97,11 @@ lexicon_spellchecked = lexicon_spellchecked %>%
     tm_message_end = gsub("T", " ", tm_message_end),
     tm_message_end = gsub("Z", "", tm_message_end)
   )
+
+
+lexicon_spellchecked = left_join(lexicon_spellchecked, gpt %>% dplyr::select(-corrected_message),
+                                 by = c('subjectID','tm_message_start', 'id_app',
+                                        'tm_message_end'))
 
 lexicon_processed = dplyr::left_join(lexicon_processed, lexicon_spellchecked, by = c("subjectID", "tm_message_start", "tm_message_end", "id_app")) %>%
   distinct(subjectID, tm_message_start, tm_message_end, id_app, .keep_all = TRUE)
@@ -70,14 +131,9 @@ gc()
 ```
 
 
-```{r}
-# remove first 12000 entries of participant id_to_recode_utf8 that were used in training/fine-tuning to avoid circularity
-maps_validation_df <- maps_validation_df %>%
-  arrange(subjectID, tm_message_start) %>% # Ensure chronological order
-  group_by(subjectID) %>%
-  filter(!(subjectID == id_to_recode_utf8 & row_number() <= 12000)) %>%
-  ungroup()
 
+```{r}
+table(maps_validation_df$suicide_related)
 
 # make sure NAs are 0s for human codings
 maps_validation_df = mutate(maps_validation_df, suicide_related = ifelse(is.na(suicide_related), 0, suicide_related))
@@ -88,6 +144,9 @@ false_negative = maps_validation_df %>%
                   suicide_lexicon_custom_full_raw == 0 & emoji_flag_raw ==0 & celeb_historical_suicide_token_raw ==0 & 
                   suicide_lexicon_custom_full_spellchecked == 0 & emoji_flag_spellchecked ==0 & 
                   celeb_historical_suicide_token_spellchecked ==0)
+
+false_negative_gpt = maps_validation_df %>%
+  dplyr::filter(suicide_related ==1 & gpt_code == 0)
 
 false_positive = maps_validation_df %>%
   dplyr::filter(suicide_related == 0 &
@@ -100,6 +159,12 @@ false_positive = maps_validation_df %>%
                     suicide_lexicon_custom_full_spellchecked == 1 | 
                     emoji_flag_spellchecked ==1 | 
                     celeb_historical_suicide_token_spellchecked ==1))
+
+false_positive_gpt = maps_validation_df %>%
+  dplyr::filter(suicide_related == 0 & gpt_code == 1)
+
+true_positive_gpt = maps_validation_df %>%
+  dplyr::filter(suicide_related == 1 & gpt_code == 1)
 
 true_positive = maps_validation_df %>%
   dplyr::filter(suicide_related ==1 &
@@ -305,7 +370,7 @@ maps_validation_df <- left_join(
 
 
 
-save(maps_validation_df, file = '../model_outputs_step1/data_for_maps_validation.rda')
+save(maps_validation_df, file = paste0('../model_outputs_step1/data_for_maps_validation', Sys.Date(), '.rda'))
 ```
 
 
@@ -384,12 +449,149 @@ washu_for_validation = dplyr::left_join(washu_youth, for_validation,
                                       'id_app', 'SI')) %>%
   distinct()
 
-# correct miscoding
-washu_for_validation = mutate(washu_for_validation, 
-                              SI = ifelse(tm_message_start == 'DATETIME' & subjectID == id_washu_errorcorrect, 0, SI),
-            SI = ifelse(is.na(SI), 0, SI),
-            low_srl_allconstructs = as.integer(low_srl_allconstructs))
 
-save(washu_for_validation, file = '../model_outputs_step1/data_for_washu_validation.rda')
+save(washu_for_validation, file = paste0('../model_outputs_step1/data_for_washu_validation', Sys.Date(), '.rda'))
+
+```
+
+# PREDICT
+
+# First combine lexicon with human coding
+```{r}
+predict_lexicon = read_csv("../data_stage2/predict_flagged_vs_maps_final_2025-08-11.csv")
+
+predict_unique_id = data.frame(filepath=unique(predict_lexicon$filepath))
+predict_unique_id = mutate(predict_unique_id, ID = str_extract(filepath, "(?<=PREDICT/)[^/]+"))
+
+predict_lexicon = left_join(predict_lexicon, predict_unique_id, by = 'filepath')
+
+
+load('../model_outputs_step1/coder_labels_predict_stage1_coalesced.rda')
+coalesced_predict = final_predict
+
+
+predict_for_validation = dplyr::filter(predict_lexicon, ID %in% coalesced_predict$subject_id) %>%
+  dplyr::select(subject_id = ID, everything())
+
+predict_for_validation = left_join(coalesced_predict, predict_for_validation %>% dplyr::select(-text_clean), by = c('subject_id', 'tm_message_start', 'tm_message_end', 'id_app'))
+
+
+predict_for_validation = predict_for_validation %>%
+  distinct(subject_id, tm_message_start, tm_message_end, id_app, .keep_all = TRUE)
+
+# GPT4.0 mini
+gpt_predict_files = list.files('../model_outputs_step1/gpt/fewshot_predict_v1/results/', full.names = TRUE)
+
+gpt_predict = map_dfr(.x = gpt_predict_files, .f = read_csv) 
+
+gpt_predict = mutate(gpt_predict,
+             gpt_code = case_when(
+               label == 'Yes' ~ 1,
+               label == 'No' ~ 0,
+               TRUE ~ NA_real_
+             ))
+  
+
+gpt_predict = dplyr::select(gpt_predict, subjectID, entry_id, gpt_code)
+
+# GPT3.5
+
+gpt3_predict_files = list.files('../model_outputs_step1/gpt/fewshot_predict_v1_gpt3/results/', full.names = TRUE)
+
+gpt3_predict = map_dfr(.x = gpt3_predict_files, .f = read_csv) 
+
+gpt3_predict = mutate(gpt3_predict,
+             gpt3_code = case_when(
+               label == 'Yes' ~ 1,
+               label == 'No' ~ 0,
+               TRUE ~ NA_real_
+             ))
+
+gpt3_predict = dplyr::select(gpt3_predict, subjectID, entry_id, gpt3_code)
+
+predict_for_validation = mutate(predict_for_validation, subjectID = as.numeric(subject_id))
+
+gpt_predict = left_join(gpt_predict, gpt3_predict, by = c('entry_id', 'subjectID'))
+
+
+predict_for_validation = left_join(predict_for_validation, gpt_predict, by = c('subjectID', 'entry_id'))
+
+```
+
+
+```{r}
+predict_low_outdir = '../model_outputs_step1/low_lexicon_outputs_spellchecked_predict/'
+
+
+low_srl_flagged_predict = NULL
+flag_list = list()
+  
+for (id in unique(predict_for_validation$subjectID)) {
+    cat("Processing subjectID:", id, "\n")
+    
+    tmp_flag = tryCatch({
+      flag_messages_low_srl(output_dir = predict_low_outdir, id = id, predict=TRUE)
+    }, error = function(e) {
+      message(sprintf("Error processing subjectID %s: %s", id, e$message))
+      return(NULL)
+    })
+    
+    if (!is.null(tmp_flag)) {
+      flag_list[[as.character(id)]] = tmp_flag
+    }
+  }
+  
+  # Combine all results into one dataframe
+  low_srl_flagged_predict = do.call(rbind, flag_list)
+  
+  
+low_srl_flagged_predict = mutate(
+  low_srl_flag_count_only = ifelse(is.na(low_srl_flag_count_only), 0, low_srl_flag_count_only),
+  low_srl_flagged_predict,
+                                 low_srl_flag = ifelse(
+                                   low_srl_flag_count_only == 1 | low_srl_flag_similarity_only ==1, 1, 0
+                                 ))
+
+
+low_srl_flagged_predict = dplyr::select(low_srl_flagged_predict, 
+                                        subjectID, entry_id, low_srl_flag_count_only,
+                                        low_srl_flag_similarity_only,
+                                        low_srl_flag)
+
+predict_for_validation = left_join(predict_for_validation, low_srl_flagged_predict,
+                                   by = c('subjectID', 'entry_id'))
+
+```
+
+```{r}
+maps_predict_validation = 
+  rbind(
+  dplyr::select(maps_validation_df, subjectID, text_clean, lexicon_only_flag, swaminathan_full_flag, 
+                swaminathan_thoughtsmethods_flag, low_srl_flag, low_srl_flag_count_only, gpt_code, gpt3_code, suicide_related),
+  dplyr::select(predict_for_validation, 
+                                        subjectID, text_clean, lexicon_only_flag=suicide_lexicon_custom_full,
+                                        swaminathan_full_flag = suicide_lexicon_swaminathan_2023, 
+                                        swaminathan_thoughtsmethods_flag = suicide_lexicon_thoughts_methods_only,
+                                        low_srl_flag, low_srl_flag_count_only,
+                                        gpt_code, gpt3_code, suicide_related)
+  )
+
+# proportion null gpt4.o mini - blank / null entries not run through models so automatically coded as 0
+sum(is.na(maps_predict_validation$gpt_code))
+
+# proportion null gpt3.5 turbo - blank / null entries not run through models so automatically coded as 0
+sum(is.na(maps_predict_validation$gpt3_code))
+
+maps_predict_validation = mutate(maps_predict_validation,
+                                 gpt_code = ifelse(is.na(gpt_code), 0, gpt_code),
+                                 gpt3_code = ifelse(is.na(gpt3_code), 0, gpt3_code))
+
+
+write.csv(maps_predict_validation, file = '../model_outputs_step1/maps_predict_validation_combined.csv', row.names=FALSE)
+
+
+```
+
+```{r}
 
 ```

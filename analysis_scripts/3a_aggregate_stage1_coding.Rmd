@@ -12,7 +12,9 @@ library(purrr)
 source('helper_functions.R')
 ```
 
-# Combine coder files and coalesce together
+# MAPS
+
+## Combine coder files and coalesce together
 ```{r}
 # Step 1: Combine the coder files
 file_paths = list.files("/Volumes/AUERBACHLAB/Columbia/MAPS_Language/data/manual_coding/suicide_language/step_one_coding/coded_reconverted_csvs/", 
@@ -45,7 +47,7 @@ disagree_rows = dplyr::filter(coalesced, code1 != code2)
 agree_rows = dplyr::filter(coalesced, code1 == code2, code1==1)
 ```
 
-# Calculate cohen's kappa by subject
+## Calculate cohen's kappa by subject
 
 ```{r}
 kappa_by_subject = coalesced %>%
@@ -65,7 +67,7 @@ kappa_by_subject = coalesced %>%
 ```
 
 
-# Overall Kappa
+## Overall Kappa for MAPS
 
 ```{r}
 data_for_kappa = coalesced %>% dplyr::select(code1, code2) %>% ungroup() 
@@ -78,7 +80,7 @@ psych::cohen.kappa(x=kappa_mat)
 ```
 
 
-# Save out rows of disagreement for 3rd coder
+## Save out rows of disagreement for 3rd coder
 ```{r}
 disagree_rows_for_coder3 = disagree_rows %>% 
   dplyr::select(subjectID, tm_message_start, tm_message_end, 
@@ -90,7 +92,7 @@ write.csv(disagree_rows_for_coder3, file = paste0('/Volumes/AUERBACHLAB/Columbia
 ```
 
 
-# Pull in coder3 ratings to break ties
+## Pull in coder3 ratings to break ties
 
 ```{r}
 # Step 1: Read and process coder3_ratings
@@ -134,4 +136,97 @@ final_codings = final_codings %>%
 
 
 write.csv(final_codings, file = '../../../data/manual_coding/suicide_language/step_one_coding/coded_reconverted_csvs/final/final_codings.csv', row.names = FALSE)
+```
+
+
+# PREDICT
+
+```{r}
+coalesced_predict = merge_coder_files_predict(
+  data_dir  = "/Volumes/AUERBACHLAB/Columbia/MAPS_Language/data/manual_coding/suicide_language_prediction/predict_coding_stage1/completed",
+  join_cols = c("subjectID", "entry_id", "tm_message_start", "tm_message_end", "id_app", "text_clean", "translated_message"),
+  make_temporary = FALSE
+)
+
+
+coalesced_doublecode_predict = coalesced_predict$paired
+
+# replace NAs (which indicate absence of suicide-related language in coding) with 0s
+coalesced_doublecode_predict = coalesced_doublecode_predict %>%
+  mutate(
+    suicide_related_coder1 = replace_na(suicide_related_coder1, 0),
+    suicide_related_coder2 = replace_na(suicide_related_coder2, 0)
+  )
+```
+
+## Full kappa for all coded data
+
+```{r}
+data_for_kappa_predict = coalesced_doublecode_predict %>% dplyr::select(suicide_related_coder1, suicide_related_coder2) %>% ungroup() 
+
+full_data_for_kappa = rbind(data_for_kappa_predict %>% dplyr::select(code1=suicide_related_coder1, code2=suicide_related_coder2),
+                            data_for_kappa)
+
+full_kappa_mat = as.matrix(full_data_for_kappa)
+psych::cohen.kappa(x=full_kappa_mat)
+
+```
+
+## For resolving ties
+```{r}
+
+coalesced_doublecode_predict = dplyr::mutate(coalesced_doublecode_predict, disagree = ifelse(suicide_related_coder1 != suicide_related_coder2, 1, 0))
+
+
+disagree_rows =  dplyr::filter(coalesced_doublecode_predict, disagree==1) %>%
+  dplyr::select(subjectID, entry_id, disagree)
+
+disagree_rows %>%
+  group_by(subjectID) %>%
+  count()
+
+write.csv(disagree_rows, file = '../../../data/manual_coding/suicide_language_prediction/predict_coding_stage1/disagreement_delegation.csv', row.names=FALSE)
+
+# write out individual csv files for coder3 to resolve (masking who coded what prior)
+for (id in unique(coalesced_doublecode_predict$subjectID)){
+  outdata = dplyr::filter(coalesced_doublecode_predict, subjectID==id)
+  outdata = dplyr::select(outdata, -coder1_name, -coder2_name, -suicide_related_coder1, -suicide_related_coder2)
+  outdata$coder3 = ''
+  write.csv(outdata, file = paste0('../../../data/manual_coding/suicide_language_prediction/predict_coding_stage1/disagreement_blank/', id, '_blank.csv'), row.names=FALSE)
+}
+
+```
+
+## Pull in disagreement files (tie-breaking)
+```{r}
+disagreement_files = list.files('../../../data/manual_coding/suicide_language_prediction/predict_coding_stage1/disagreement_completed/',
+                                pattern = '.csv', 
+                                full.names = TRUE)
+
+
+disagreement_resolution = map_dfr(disagreement_files, read_csv, col_types = cols(
+  tm_message_start = col_character(),
+  tm_message_end = col_character()
+))
+
+disagreement_resolution = dplyr::filter(disagreement_resolution, disagree==1)
+
+
+final_predict = left_join(coalesced_doublecode_predict, dplyr::select(disagreement_resolution, subjectID, entry_id, coder3),
+                          by = c('subjectID', 'entry_id'))
+
+
+
+final_predict = mutate(final_predict,
+                       suicide_related = case_when(
+                         disagree == 0 ~ suicide_related_coder1,
+                         disagree == 1 & !is.na(coder3) ~ coder3
+                       ))
+
+
+final_predict = dplyr::select(final_predict, -subjectID, -contains('coder'))
+
+# Write out for model validation
+save(final_predict, file = '../model_outputs_step1/coder_labels_predict_stage1_coalesced.rda')
+write.csv(final_predict, file = '../model_outputs_step1/coder_labels_predict_stage1_coalesced.csv', row.names=FALSE)
 ```

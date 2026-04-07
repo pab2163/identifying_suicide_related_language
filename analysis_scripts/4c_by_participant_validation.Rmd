@@ -18,14 +18,15 @@ library(cowplot)
 source('helper_functions.R')
 ```
 
-# Load MAPS validation dataframe
+# Load MAPS/PREDICT validation dataframe and calculate validation stats by participant
+
 ```{r}
-load('../model_outputs_step1/data_for_maps_validation.rda')
+validation_df = read.csv('../model_outputs_step1/maps_predict_validation_combined.csv')
 
-table(maps_validation_df$swaminathan_thoughtsmethods_flag)
+table(validation_df$swaminathan_thoughtsmethods_flag)
 
 
-bysub_summary = maps_validation_df %>%
+bysub_summary = validation_df %>%
                    group_by(subjectID) %>%
   summarise(n = n(),
             true_rate = sum(suicide_related)/n) %>%
@@ -33,16 +34,19 @@ bysub_summary = maps_validation_df %>%
   mutate(deid = as.character(sprintf("%02d", row_number(subjectID))))
   
 # Remove one participant with no true positives (can't be analyzed in isolation)
-bysub = maps_validation_df %>%
-  dplyr::filter(subjectID != 'no_true_positives') %>%
+bysub = validation_df %>%
+  group_by(subjectID) %>%
+  mutate(true_positive_count = sum(suicide_related)) %>%
+  ungroup() %>%
+  dplyr::filter(true_positive_count > 0) %>%
   group_by(subjectID) %>%
   nest() %>%
-  mutate(stats = purrr::map(data, ~evaluate_predictions(maps_validation_df = 
+  mutate(stats = purrr::map(data, ~evaluate_predictions(input_df = 
                                                                      mutate(., suicide_related = factor(suicide_related, levels = c("0", "1"))), 
                                                         reference_col='suicide_related', 
                                                         positive_class = '1',
                                                         prediction_cols = c('lexicon_only_flag', 'low_srl_flag', 
-                                                                          'swaminathan_thoughtsmethods_flag'))))
+                                                                          'swaminathan_thoughtsmethods_flag', 'gpt_code'))))
 # Nest data and calculate model stats by participant
 bysub_stats = bysub %>%
   dplyr::select(-data) %>%
@@ -54,9 +58,10 @@ bysub_stats = bysub %>%
          label = paste0('Participant ', deid, ' (N=', n, ' entries, ', 
                         format(round(true_rate*100, 2), nsmall=2), '% true positives)')) %>%
   mutate(PredictionColumn = dplyr::recode(PredictionColumn,
-                                         'low_srl_flag'='Low 2024\nLexicon',
+                                         'low_srl_flag'=' Low 2024\nLexicon',
                                          'lexicon_only_flag'='Youth Suicide\nLexicon',
-                                         'swaminathan_thoughtsmethods_flag'=' Swaminathan 2023\nLexicon'
+                                         'swaminathan_thoughtsmethods_flag'='  Swaminathan 2023\nLexicon',
+                                         'gpt_code'='GPT-4o mini\n(Few-shot)'
                                          ))
 # Plot model stats by participant
 validation_maps_bysub = ggplot(bysub_stats, aes(x = PredictionColumn, y = F1, color = label)) +
@@ -66,8 +71,8 @@ validation_maps_bysub = ggplot(bysub_stats, aes(x = PredictionColumn, y = F1, co
   labs(color = 'Participant', y = 'F1 Score') 
 
 
-ggsave(validation_maps_bysub, file = '../figures/supplemental/step1_validation_bysub.png',
-       height = 4, width = 7)
+ggsave(validation_maps_bysub, file = '../figures/supplemental/rev1_added/step1_validation_bysub.png',
+       height = 6, width = 9)
 
 ```
 
