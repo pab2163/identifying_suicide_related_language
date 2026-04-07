@@ -93,7 +93,7 @@ one_bootstrap = function(seed, df){
   si_z_human = glmmTMB(
     suicide_related ~ SSI19_i + age + (1 | ID),
     family = binomial(link = "logit"),
-    data = dplyr::select(maps, ID, age, SSI19_i, suicide_related) %>% na.omit() %>% mutate(SSI19_i = scale(SSI19_i)))
+    data = dplyr::select(boot_sample, ID, age, SSI19_i, suicide_related) %>% na.omit() %>% mutate(SSI19_i = scale(SSI19_i)))
   
   or_si_lexicon = broom.mixed::tidy(si_z_lexicon, conf.int=TRUE, exponentiate=TRUE) %>% 
     mutate(coding = 'lexicon')

@@ -552,12 +552,12 @@ for (id in unique(predict_for_validation$subjectID)) {
   low_srl_flagged_predict = do.call(rbind, flag_list)
   
   
-low_srl_flagged_predict = mutate(
+low_srl_flagged_predict = mutate(low_srl_flagged_predict,
   low_srl_flag_count_only = ifelse(is.na(low_srl_flag_count_only), 0, low_srl_flag_count_only),
-  low_srl_flagged_predict,
                                  low_srl_flag = ifelse(
                                    low_srl_flag_count_only == 1 | low_srl_flag_similarity_only ==1, 1, 0
                                  ))
+
 
 
 low_srl_flagged_predict = dplyr::select(low_srl_flagged_predict, 

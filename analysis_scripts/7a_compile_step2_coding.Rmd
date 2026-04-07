@@ -83,9 +83,9 @@ maps_inclusion = read_csv('/Volumes/AUERBACHLAB/Columbia/MAPS_Data/Analysis/ID_F
 maps_include_ids = maps_inclusion %>%
   dplyr::filter(!is.na(study_id), !grepl('ineligible', notes_main_idlist), !grepl('not eligible', notes_main_idlist))
 
-removed_ids = dplyr::filter(flagged, !id %in% maps_include_ids$study_id)
+removed_ids = dplyr::filter(df, !id %in% maps_include_ids$study_id)
 
-flagged = dplyr::filter(flagged, id %in% maps_include_ids$study_id)
+flagged = dplyr::filter(df, id %in% maps_include_ids$study_id)
 ```
 
 # Calculate stats on full data

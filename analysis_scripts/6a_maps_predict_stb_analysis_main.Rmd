@@ -387,6 +387,7 @@ emmeans::emmeans(m_maps_stb_days, ~Control, type = "response") %>%
 
 emmeans::emmeans(m_maps_stb_schoolclosure, ~Control, type = "response") %>%
   pairs() %>%
+  confint()
 
 emmeans::emmeans(m_maps_stb_schoolclosure, ~schoolclosure, type = "response") %>%
   pairs(reverse=TRUE) %>%

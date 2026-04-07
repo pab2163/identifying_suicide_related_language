@@ -37,8 +37,12 @@ except Exception as e:
 # ---------------------------
 
 # List of IDs
-ids_validation = [ID_LIST]
 
+with open('maps_validation_ids.txt', 'r') as file:
+    ids_validation = file.readlines()
+
+# last id needs recoding for non-utf8
+id_needs_recode = ids_validation[-1]
 
 # Base path
 base_path = "/Volumes/AUERBACHLAB/Columbia/MAPS_Language/data/KeyInput"
@@ -51,10 +55,10 @@ os.makedirs(output_dir, exist_ok=True)
 for id in ids_validation:
     filepath=''
     # One ID needs to be loaded from a different file to avoid non-utf8 encoding issues
-    if id != id_need_recoding:
+    if id != id_needs_recode:
         filepath = os.path.join(base_path, str(id), f"corrected_{id}.csv")
-    elif id == id_need_recoding:
-        filepath = '/Volumes/AUERBACHLAB/Columbia/MAPS_Language/data/Preprocessed/spell_correct/spell_correctedgpt/id_need_recoding_full_with_pred_old.csv'
+    elif id == id_needs_recode:
+        filepath = f'/Volumes/AUERBACHLAB/Columbia/MAPS_Language/data/Preprocessed/spell_correct/spell_correctedgpt/{id_needs_recode}_full_with_pred_old.csv'
     print(f"Processing subject: {filepath}")
     input_path = filepath
     try:
@@ -128,22 +132,6 @@ for id in ids_validation:
         warnings.warn(f"Error during cosine similarity computation for subject {filepath}: {e}. Skipping.")
         continue
 
-
-    try:
-        features, lexicon_dict_final_order, cosine_similarities = cts.measure(
-            lexicon_dict,
-            text_inputs,
-            count_if_exact_match=False,
-            summary_stat=['max', 'mean'],
-            embeddings_model='models/all-MiniLM-L6-v2-local',
-            stored_embeddings_path='data/embeddings/stored_embeddings.pickle',
-            save_lexicon_embeddings=True,
-            verbose=True,
-            document_representation="sentence"
-        )
-    except Exception as e:
-        warnings.warn(f"Error during cosine similarity computation for subject {filepath}: {e}. Skipping.")
-        continue
 
     features = pd.concat([input_df, features], axis=1)
     features.to_csv(f'{output_dir}{id}_srl_lexicon_cts_features_sentence.csv', index=False)

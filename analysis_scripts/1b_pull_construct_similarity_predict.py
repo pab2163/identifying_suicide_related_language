@@ -127,21 +127,5 @@ for filepath in file_paths_predict:
         continue
 
 
-    try:
-        features, lexicon_dict_final_order, cosine_similarities = cts.measure(
-            lexicon_dict,
-            text_inputs,
-            count_if_exact_match=False,
-            summary_stat=['max', 'mean'],
-            embeddings_model='models/all-MiniLM-L6-v2-local',
-            stored_embeddings_path='data/embeddings/stored_embeddings.pickle',
-            save_lexicon_embeddings=True,
-            verbose=True,
-            document_representation="sentence"
-        )
-    except Exception as e:
-        warnings.warn(f"Error during cosine similarity computation for subject {filepath}: {e}. Skipping.")
-        continue
-
     features = pd.concat([input_df, features], axis=1)
     features.to_csv(f'{output_dir}/similarity_{filestring}', index=False)
