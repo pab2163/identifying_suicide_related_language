@@ -1,7 +1,6 @@
 import pandas as pd
 import re
 import string
-import re
 import emoji
 import numpy as np
 from tqdm import tqdm
@@ -54,7 +53,7 @@ def load_codebook_with_pairs(df):
         df['freestanding_token'] = False
 
     if 'freestanding_pair' not in df.columns:
-        df['freestsanding_pair'] = False
+        df['freestanding_pair'] = False
 
     patterns = []
     for _, row in df.iterrows():
@@ -192,8 +191,8 @@ def get_matching_token(text, patterns, paired):
             if means_re.search(text) and pairs_re.search(text):
                 return (means_re.pattern, pairs_re.pattern)
     else:
-        for token in patterns:
-            if token in text:
+        for compiled, token in patterns:
+            if compiled.search(text):
                 return token
     return None
 

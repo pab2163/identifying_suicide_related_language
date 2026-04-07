@@ -47,6 +47,7 @@ def merge_text_sources(subfolder):
     except Exception as e:
         raise RuntimeError(f"Error merging files in {subfolder.name}: {e}")
 
+# batch flagging function to run through and flag both the raw text and preproc text and align the output flags
 def batch_flag_suicide_language(input_dir, output_dir, debug=False):
     input_dir = Path(input_dir)
     output_dir = Path(output_dir)

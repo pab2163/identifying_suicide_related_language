@@ -130,7 +130,14 @@ rm(lexicon_processed, lexicon_raw, lexicon_spellchecked)
 gc()
 ```
 
-
+```{r}
+# remove first 12000 entries of participant id_to_recode_utf8 that were used in training/fine-tuning to avoid circularity
+maps_validation_df <- maps_validation_df %>%
+  arrange(subjectID, tm_message_start) %>% # Ensure chronological order
+  group_by(subjectID) %>%
+  filter(!(subjectID == id_to_recode_utf8 & row_number() <= 12000)) %>%
+  ungroup()
+```
 
 ```{r}
 table(maps_validation_df$suicide_related)

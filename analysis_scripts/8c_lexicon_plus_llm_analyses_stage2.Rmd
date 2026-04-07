@@ -1,0 +1,653 @@
+---
+title: "Analyses of Lexicon+GPT Two-Stage Approach"
+output: html_document
+date: "2026-03-04"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(glmmTMB)
+library(broom.mixed)
+source('helper_functions.R')
+maps_predict_colors = c('darkred', '#00BFC4')
+
+gpt = read.csv('/Volumes/AUERBACHLAB/Columbia/MAPS_Language/scripts/maps_suicide_lexicon/model_outputs_step2/gpt/fewshot_window_v2/results/fwhm_1hr_focal_maps_inputs_for_llm_with_ids_with_responses.csv')
+
+# Vector of binary column names
+binary_cols = c(
+  "jokes_hyperbole", "first_si_passive", "first_si_active",
+  "first_nssi_thought", "first_nssi_behav", "first_si_absence",
+  "first_victim", "first_sb", "first_lifehate", "first_helpseek",
+  "first_reason_living", "second_support", "second_victim", "second_si",
+  "second_sb", "second_nssi", "third_support", "third_victim", "third_si",
+  "third_sb", "third_nssi", "gaming", "lethal_means", "resources",
+  "maps", "celeb", "media", "art", "unclear", "other"
+)
+
+
+# Make sure binary columns are binarized
+gpt[binary_cols] <- lapply(gpt[binary_cols], function(x) {
+  x[x == "" | is.na(x)] <- 0      # Convert NA or blank string to 0
+  as.numeric(x)                  # Convert to numeric if not already
+})
+
+
+gpt = mutate(gpt, timing = tolower(timing))
+
+
+gpt = mutate(gpt,
+                        current_first_person = case_when(
+                          first_si_active == 1 & 
+                            grepl('current', timing)  ~ 'Yes',
+                          first_si_active == 1 & 
+                            grepl('future', timing)  ~ 'Yes',
+                          first_sb == 1 & 
+                            grepl('current', timing)  ~ 'Yes',
+                          first_sb == 1 & 
+                            grepl('future', timing)  ~ 'Yes',
+                          first_helpseek == 1 & 
+                            grepl('current', timing)  ~ 'Yes',
+                          first_helpseek == 1 & 
+                            grepl('future', timing)  ~ 'Yes',
+                          TRUE ~ 'No'
+                        ))
+
+gpt = mutate(gpt, response = label)
+
+gpt = mutate(gpt, current_first_person = ifelse(current_first_person == 'Yes', 1, 0))
+
+gpt = mutate(gpt, response = ifelse(response == 'Yes', 1, 0))
+
+table(gpt$current_first_person)
+table(gpt$response)
+```
+
+# First, see how well GPT-4o mini did in identifying current, first-person, authentic suicide-related language
+
+```{r}
+f = evaluate_predictions(input_df =  gpt, reference_col = 'current_first_person', prediction_cols = c('response'))
+
+false_positives = dplyr::filter(gpt, current_first_person ==0 & response == 1)
+
+false_negatives = dplyr::filter(gpt, current_first_person ==1 & response == 0)
+
+
+false_positive_jokes = false_positives %>% 
+  dplyr::filter(jokes_hyperbole == 1)
+
+false_positive_passive = false_positives %>% 
+  dplyr::filter(first_si_passive == 1)
+
+false_positive_not_suicide = false_positives %>% 
+  dplyr::filter(suicide_related == 0)
+
+true_positives = dplyr::filter(gpt, current_first_person == 1)
+```
+
+
+# How strongly are the entries flagged by this Lexicon+GPT approach associated with STB history and baseline suicidal ideation?
+
+```{r}
+maps_selfreport = read_csv('/Volumes/AUERBACHLAB/Columbia/MAPS_Data/Analysis/Wrangling/Self_Report/data/selfreport_07.11.2024.csv') %>% 
+  dplyr::select(ID, age, GROUP, Control, SSI19_i) 
+
+load('../data_stage2/maps_full_codings_spellchecked.rda')
+
+maps = mutate(final_spellcheck_codings, flag_bin = flag_final_no_emojis)
+rm(final_spellcheck_codings)
+gc()
+
+maps = maps %>%
+  distinct(text_clean, tm_message_start, tm_message_end, id_app, .keep_all = TRUE)
+
+maps = left_join(maps %>% dplyr::select(ID=id, everything()), maps_selfreport, by = 'ID')
+
+maps = maps %>%
+  group_by(ID)%>%
+  mutate(total_message = n()) %>%
+  ungroup()
+
+maps = left_join(maps, gpt %>% dplyr::select(ID = id, response, id_row, id_message, corrected_message, flagged), by = c('ID', 'id_row', 'id_message', 'corrected_message', 'flagged'))
+
+maps = mutate(maps, gpt = ifelse(is.na(response), 0, response))
+```
+
+```{r}
+by_id_summary = maps %>%
+  group_by(ID)%>%
+  summarise(total_message = n(),
+            total_flagged = sum(flag_bin==1),
+            proportion_flagged = total_flagged/total_message)
+
+maps = maps %>%
+  group_by(ID)%>%
+  mutate(total_message = n()) %>%
+  ungroup()
+
+
+
+# remove participants with fewer than 1000 entries
+maps = dplyr::filter(maps, total_message >= 1000)
+gc()
+
+
+maps = mutate(maps, lifetime_stb = ifelse(Control==0, 1, 0),
+              suicide_related = ifelse(is.na(suicide_related), 0, suicide_related))
+```
+
+
+```{r}
+maps = mutate(maps, timing = tolower(timing))
+
+
+# Code key content categories as model outcomes
+maps = mutate(maps,
+                        current_first_person = case_when(
+                          first_si_active == 1 & 
+                            grepl('current', timing)  ~ 'Yes',
+                          first_si_active == 1 & 
+                            grepl('future', timing)  ~ 'Yes',
+                          first_sb == 1 & 
+                            grepl('current', timing)  ~ 'Yes',
+                          first_sb == 1 & 
+                            grepl('future', timing)  ~ 'Yes',
+                          first_helpseek == 1 & 
+                            grepl('current', timing)  ~ 'Yes',
+                          first_helpseek == 1 & 
+                            grepl('future', timing)  ~ 'Yes',
+                          TRUE ~ 'No'
+                        ),
+              currfirst = ifelse(current_first_person=='Yes', 1, 0),
+              jokes_hyperbole = ifelse(jokes_hyperbole=='1', 1, 0),
+              jokes_hyperbole = ifelse(is.na(jokes_hyperbole), 0, jokes_hyperbole),
+              first = case_when(
+                first_si_passive==1 | first_si_active == 1 | first_nssi_thought == 1 |
+                first_nssi_behav == 1 | first_si_absence ==1 | first_victim == 1 |
+                first_sb ==1 | first_lifehate == 1 | first_helpseek ==1 | 
+                first_reason_living == 1 ~ 1,
+              TRUE ~ 0
+              ),
+              second = case_when(second_support ==1 | second_victim ==1 |
+                                 second_si ==1 | second_sb == 1 | 
+                                 second_nssi ==1 ~ 1,
+              TRUE ~ 0),
+              third = case_when(third_support ==1 | third_victim ==1 |
+                                 third_si ==1 | third_sb == 1 | 
+                                 third_nssi ==1 ~ 1,
+                                TRUE ~ 0),
+              false_positive = case_when(
+                flag_bin ==1 & suicide_related == 0 ~ 1,
+                TRUE ~ 0
+              ),
+              support = case_when(second_support ==1 | third_support == 1 ~1, 
+                                  TRUE ~ 0))
+
+table(maps$currfirst)
+table(maps$jokes_hyperbole)
+
+maps = mutate(maps, gpt_label = gpt)
+```
+
+# Make sure not to include any excluded MAPS participants
+```{r}
+maps_inclusion = read_csv('/Volumes/AUERBACHLAB/Columbia/MAPS_Data/Analysis/ID_FINAL/id_list_compiled_2026-02-10.csv')
+
+
+maps_include_ids = maps_inclusion %>%
+  dplyr::filter(!is.na(study_id), !grepl('ineligible', notes_main_idlist), !grepl('not eligible', notes_main_idlist))
+
+
+removed_ids = dplyr::filter(maps, !ID %in% maps_include_ids$study_id)
+
+maps = dplyr::filter(maps, ID %in% maps_include_ids$study_id)
+```
+
+```{r}
+# Function for bootstrapping models and comparing strength of lexicon vs lexicon+GPT within bootstrap folds
+# Saves odds ratio for each model out
+one_bootstrap_gpt = function(seed, df){
+  set.seed(seed)
+
+  # get bootstrap sample using custom sample_participants() function
+  boot_sample =  
+    dplyr::select(df, ID, age, SSI19_i, flag_bin, gpt_label, lifetime_stb)
+  boot_sample = sample_participants_optimized(boot_sample)
+  boot_sample = mutate(boot_sample, ID = as.character(ID))
+  
+  
+  boot_sample =  
+    boot_sample %>%
+    na.omit() %>% 
+    mutate(SSI19_i = scale(SSI19_i))
+  
+  n_participants = length(unique(boot_sample$ID))
+
+
+  # SI
+  si_z_lexicon = glmmTMB(
+    flag_bin ~ SSI19_i + age + (1 | ID),
+    family = binomial(link = "logit"),
+    data = boot_sample)
+  
+  si_z_gpt = glmmTMB(
+    gpt_label ~ SSI19_i + age + (1 | ID),
+    family = binomial(link = "logit"),
+    data = boot_sample)
+  
+  or_si_lexicon = broom.mixed::tidy(si_z_lexicon, conf.int=TRUE, exponentiate=TRUE) %>% 
+    mutate(coding = 'lexicon')
+  or_si_gpt = broom.mixed::tidy(si_z_gpt, conf.int=TRUE, exponentiate=TRUE) %>% 
+    mutate(coding = 'gpt')
+  
+  # STB
+  stb_lexicon = glmmTMB(
+    flag_bin ~ lifetime_stb + age + (1 | ID),
+    family = binomial(link = "logit"),
+    data= boot_sample)
+  
+  stb_z_gpt = glmmTMB(
+    gpt_label ~ lifetime_stb + age + (1 | ID),
+    family = binomial(link = "logit"),
+    data = boot_sample)
+  
+  or_stb_lexicon = broom.mixed::tidy(stb_lexicon, conf.int=TRUE, exponentiate=TRUE) %>% 
+    mutate(coding = 'lexicon')
+  or_stb_gpt = broom.mixed::tidy(stb_z_gpt, conf.int=TRUE, exponentiate=TRUE) %>% 
+    mutate(coding = 'gpt')
+  
+  or_table = rbind(or_si_lexicon, or_si_gpt, or_stb_lexicon, or_stb_gpt) %>%
+    mutate(iter = seed, n_participants = n_participants)
+  
+  
+  return(or_table)
+
+}
+```
+
+# Bootstrapping in MAPS 
+```{r}
+n_iter = 100
+
+start_time = Sys.time()
+for (i in 1:n_iter){
+  print(i)
+  boot_tmp=one_bootstrap_gpt(seed=i, df = maps)
+  if(i == 1){
+    boot_output = boot_tmp
+    }
+  else{
+      boot_output = rbind(boot_output, boot_tmp)
+  }
+  end_time = Sys.time()
+  print(end_time - start_time)
+  time_elapsed = end_time - start_time  
+  save(boot_output, time_elapsed, file = '../model_outputs_step2/bootstrap_outputs_gpt_vs_lexicon_maps.rda')
+}
+
+```
+
+# Non-bootstrapped MAPS analysis
+
+```{r}
+outcome_variables = c('flag_bin', 'suicide_related', 'currfirst', 'gpt')
+```
+
+
+# Model the content conglomerate category outcomes (e.g., `outcome_variables`)
+```{r}
+maps_long = maps %>%
+  dplyr::select(ID, age, SSI19_i, lifetime_stb, all_of(outcome_variables)) %>%
+  mutate(SSI19_i_z = scale(SSI19_i)) %>%
+  pivot_longer(cols = all_of(outcome_variables))
+
+
+maps_nest = maps_long %>%
+  group_by(name) %>%
+  nest()
+
+
+maps_si_z_models = maps_nest %>%
+  mutate(model = purrr::map(data, ~glmmTMB(data = ., value ~ SSI19_i_z + age + (1|ID), 
+                                           family = binomial(link = 'logit'))),
+         coef = purrr::map(model, ~broom.mixed::tidy(., conf.int=TRUE))
+  )
+
+maps_stb_models = maps_nest %>%
+  mutate(model = purrr::map(data, ~glmmTMB(data = ., value ~ lifetime_stb + age + (1|ID), 
+                                           family = binomial(link = 'logit'))),
+         coef = purrr::map(model, ~broom.mixed::tidy(., conf.int=TRUE, exponentiate=TRUE))
+  )
+
+
+maps_si_z_coef = maps_si_z_models %>% unnest(coef) %>%
+  dplyr::select(-model, -data) %>%
+  dplyr::filter(term == 'SSI19_i_z')
+
+maps_stb_or = maps_stb_models %>% unnest(coef) %>%
+  dplyr::select(-model, -data) %>%
+  dplyr::filter(term == 'lifetime_stb')
+```
+
+
+```{r}
+save(maps_si_z_models, maps_stb_models, file = '../model_outputs_step2/nobootstrap_outputs_gpt_vs_lexicon_maps.rda')
+```
+
+```{r}
+maps_si_z_coef <- mutate(maps_si_z_coef, 
+                      name_recode = dplyr::recode(name,
+                                                  flag_bin = 'Flagged By Lexicon',
+                                                  suicide_related = 'Lexicon + True Positive (Human-Coded)',
+                                                  false_positive = 'False Positive',
+                                                  jokes_hyperbole = 'Jokes/Hyperbole',
+                                                  currfirst = 'Lexicon + Current, 1st Person\n& Authentic (Human-coded)',
+                                                  first = '1st-person',
+                                                  second = '2nd-person',
+                                                  third = '3rd-person',
+                                                  support = 'Supporting Other',
+                                                  gpt = 'Lexicon + GPT4'),
+                      lex = case_when(name=='flag_bin' ~ 'Flagged By Lexicon', 
+                                      name == 'gpt' ~ 'Flagged by Lexicon + GPT',
+                                      TRUE ~ 'Flagged By Lexicon\n+ Human Coding'))
+
+maps_stb_or <- mutate(maps_stb_or, 
+                      name_recode = dplyr::recode(name,
+                                                  flag_bin = 'Flagged By Lexicon',
+                                                  suicide_related = 'Lexicon + True Positive (Human-Coded)',
+                                                  false_positive = 'False Positive',
+                                                  jokes_hyperbole = 'Jokes/Hyperbole',
+                                                  currfirst = 'Lexicon + Current, 1st Person\n& Authentic (Human-coded)',
+                                                  first = '1st-person',
+                                                  second = '2nd-person',
+                                                  third = '3rd-person',
+                                                  support = 'Supporting Other',
+                                                  gpt = 'Lexicon + GPT4'),
+                      lex = case_when(name=='flag_bin' ~ 'Flagged By Lexicon', 
+                                      name == 'gpt' ~ 'Flagged by Lexicon + GPT',
+                                      TRUE ~ 'Flagged By Lexicon\n+ Human Coding'))
+
+maps_stb_or %>% dplyr::select(name, estimate, conf.low, conf.high)
+maps_si_z_coef %>% dplyr::select(name, estimate, conf.low, conf.high)
+
+```
+
+
+# Load PREDICT
+```{r}
+gpt_predict = read_csv('/Volumes/AUERBACHLAB/Columbia/MAPS_Language/scripts/maps_suicide_lexicon/model_outputs_step2/gpt/fewshot_window_predict_v2/results/fewshot_predict_v2_results.csv')
+
+
+gpt_predict = mutate(gpt_predict, entry_id = as.numeric(sub("request_id-(\\d+)_.*", "\\1", custom_id)))
+gpt_predict = mutate(gpt_predict, ID = sub(".*_(\\d{4})\\.csv$", "\\1", custom_id))
+
+gpt_predict = dplyr::select(gpt_predict, ID, entry_id, label, reasoning)
+
+predict_full = read_csv('../data_stage2/predict_flagged_vs_maps_final_2025-08-11_with_id.csv')
+
+predict_unique_id = data.frame(filepath=unique(predict_full$filepath))
+predict_unique_id = mutate(predict_unique_id, ID = str_extract(filepath, "(?<=PREDICT/)[^/]+"))
+
+predict_full = left_join(predict_full, predict_unique_id, by = 'filepath')
+
+
+predict = left_join(predict_full, gpt_predict, by = c('ID', 'entry_id'))
+
+
+
+predict = mutate(predict, gpt_label = ifelse(label == 'Yes', 1, 0),
+                 gpt_label = ifelse(is.na(gpt_label), 0, gpt_label))
+
+
+```
+
+## prep for predict gpt analysis
+
+```{r}
+load('/Volumes/AUERBACHLAB/Columbia/SP_Data/Analysis/Wrangling/Self_Report/predict_demo_01.05.26.Rda')
+
+predict_stb = df %>%
+  dplyr::select(., 
+                ID, gender, orientation, cis, cishet, age, 
+                contains('cssrs'),
+                group,
+                contains('ssi')) %>%
+  mutate(lifetime_stb = ifelse(
+    cssrsLifetimeMostSevere > 2 | cssrsLifetimeAttempt ==1 |
+    cssrsPast2moMostSevere > 2, 1, 0),
+    lifetime_stb = ifelse(
+     is.na(lifetime_stb) & SSI21_total_i == 0, 0, lifetime_stb
+    ),
+    stb_group = case_when(
+      lifetime_stb ==1 ~ 'Lifetime STB',
+      lifetime_stb ==0 & (group=='MDD' | group=='remMDD') ~ 'Lifetime MDD',
+      lifetime_stb ==0 & group=='HC' ~ 'HC',
+    ),
+    recent_active_ideation = ifelse(cssrsPast2moMostSevere > 2, 1, 0)
+  ) %>%
+  dplyr::select(-contains('cssrs'))
+
+predict = dplyr::select(predict,
+                            -contains('suicide'),
+                            -cat_tz,
+                            -contains('emoji'))
+
+predict_stb_nona = predict_stb %>% dplyr::filter(!is.na(lifetime_stb)) 
+
+predict_stb_nona %>%
+  group_by(lifetime_stb) %>%
+  summarise(pct = n()/nrow(predict_stb_nona))
+
+predict_stb_nona %>%
+  group_by(recent_active_ideation) %>%
+  summarise(pct = n()/nrow(predict_stb_nona))
+
+table(predict_stb_nona$group) / nrow(predict_stb_nona)
+
+
+predict = left_join(predict, predict_stb, by = 'ID')
+
+predict_n_entries = predict %>%
+  mutate(date = as.Date(tm_message_start)) %>%
+  group_by(ID, lifetime_stb, date) %>%
+  summarise(n_entries = n()) %>%
+  mutate(cohort = 'PREDICT')
+
+
+by_id_summary_predict = predict %>%
+  group_by(ID)%>%
+  summarise(total_message = n(),
+            total_flagged = sum(flag_bin==1),
+            proportion_flagged = total_flagged/total_message)
+
+# what proportion of predict participants have any flagged?
+dplyr::filter(by_id_summary_predict, total_flagged > 0) %>% nrow() / nrow(by_id_summary_predict)
+
+gc()
+
+```
+
+
+```{r}
+predict = predict %>%
+  group_by(ID)%>%
+  mutate(total_message = n()) %>%
+  ungroup()
+
+# filter out predict participants with under 1000 entries
+predict = dplyr::filter(predict, total_message >= 1000)
+
+
+predict_for_analysis = dplyr::filter(predict, !is.na(lifetime_stb))
+```
+
+# Non-bootstrapped PREDICT analysis
+
+```{r}
+outcome_variables_predict = c('flag_bin', 'gpt_label')
+
+```
+
+
+# Model the content conglomerate category outcomes (e.g., `outcome_variables`)
+```{r}
+predict_long = predict_for_analysis %>%
+  dplyr::select(ID, age, SSI19_total_i, lifetime_stb, all_of(outcome_variables_predict)) %>%
+  mutate(SSI19_i_z = scale(SSI19_total_i),
+         stb = ifelse(lifetime_stb==1, 1, 0)) %>%
+  pivot_longer(cols = all_of(outcome_variables_predict))
+
+
+predict_nest = predict_long %>%
+  group_by(name) %>%
+  nest()
+
+
+predict_si_z_models = predict_nest %>%
+  mutate(model = purrr::map(data, ~glmmTMB(data = ., value ~ SSI19_i_z + age + (1|ID), 
+                                           family = binomial(link = 'logit'))),
+         coef = purrr::map(model, ~broom.mixed::tidy(., conf.int=TRUE))
+  )
+
+predict_stb_models = predict_nest %>%
+  mutate(model = purrr::map(data, ~glmmTMB(data = ., value ~ stb + age + (1|ID), 
+                                           family = binomial(link = 'logit'))),
+         coef = purrr::map(model, ~broom.mixed::tidy(., conf.int=TRUE, exponentiate=TRUE))
+  )
+
+
+predict_si_z_coef = predict_si_z_models %>% unnest(coef) %>%
+  dplyr::select(-model, -data) %>%
+  dplyr::filter(term == 'SSI19_i_z')
+
+predict_stb_or = predict_stb_models %>% unnest(coef) %>%
+  dplyr::select(-model, -data) %>%
+  dplyr::filter(term == 'stb')
+
+summary(predict_stb_models$model[[2]])
+```
+
+```{r}
+save(predict_si_z_models, predict_stb_models, file = '../model_outputs_step2/nobootstrap_outputs_gpt_vs_lexicon_predict.rda')
+```
+
+
+```{r}
+predict_si_z_coef <- mutate(predict_si_z_coef, 
+                      name_recode = dplyr::recode(name,
+                                                  flag_bin = 'Flagged By Lexicon',
+                                                  gpt_label = 'Lexicon + GPT4'),
+                      lex = case_when(name=='flag_bin' ~ 'Flagged By Lexicon', 
+                                      name == 'gpt_label' ~ 'Flagged by Lexicon + GPT',
+                                      TRUE ~ 'Flagged By Lexicon\n+ Human Coding'))
+
+predict_stb_or <- mutate(predict_stb_or, 
+                      name_recode = dplyr::recode(name,
+                                                  flag_bin = 'Flagged By Lexicon',
+                                                  gpt_label = 'Lexicon + GPT4'),
+                      lex = case_when(name=='flag_bin' ~ 'Flagged By Lexicon', 
+                                      name == 'gpt_label' ~ 'Flagged by Lexicon + GPT',
+                                      TRUE ~ 'Flagged By Lexicon\n+ Human Coding'))
+
+predict_stb_or %>% dplyr::select(name, estimate, conf.low, conf.high)
+predict_si_z_coef %>% dplyr::select(name, estimate, conf.low, conf.high)
+
+```
+
+
+# Combine non-bootstrapped analyses for figure 
+```{r}
+
+combined_stb_or = rbind(predict_stb_or %>% mutate(cohort = 'PREDICT'), 
+                        maps_stb_or %>% mutate(cohort = 'MAPS')) %>%
+  dplyr::filter(name %in% c('flag_bin', 'gpt_label', 'gpt')) %>%
+  dplyr::mutate(
+                plot_label = case_when(
+                  name_recode == 'Flagged By Lexicon' ~ "Youth Suicide Lexicon Alone",
+                  name_recode == 'Lexicon + GPT4' ~ 'Two-Stage Approach\nYouth Suicide Lexicon + GPT-4o mini'
+                )
+                )
+
+combined_si_or = rbind(predict_si_z_coef %>% mutate(cohort = 'PREDICT'), 
+                        maps_si_z_coef %>% mutate(cohort = 'MAPS')) %>%
+  dplyr::filter(name %in% c('flag_bin', 'gpt_label', 'gpt')) %>%
+  dplyr::mutate(
+                plot_label = case_when(
+                  name_recode == 'Flagged By Lexicon' ~ "Youth Suicide Lexicon Alone",
+                  name_recode == 'Lexicon + GPT4' ~ 'Two-Stage Approach\nYouth Suicide Lexicon + GPT-4o mini'
+                ),
+                or = exp(estimate),
+                or.conf.low = exp(conf.low),
+                or.conf.high = exp(conf.high))
+
+
+combined_stb_or_plot = ggplot(combined_stb_or, aes(x = plot_label, y = estimate, color = cohort)) +
+  geom_hline(yintercept = 1, lty = 2) +
+  geom_point(position = position_dodge(0.2), size = 2) + 
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0, 
+                position = position_dodge(0.2), lwd = 1) +
+  coord_flip() +
+  theme_bw() +
+  labs(y = 'STB > Psychiatric Control\nOdds Ratio', x=NULL, color = NULL, title = 'A') +
+  scale_y_log10() +
+  theme(legend.position = 'none',
+        text = element_text(face='bold')) +
+  scale_color_manual(values = maps_predict_colors)
+
+combined_si_or_plot = ggplot(combined_si_or, aes(x = plot_label, y = or, color = cohort)) +
+  geom_hline(yintercept = 1, lty = 2) +
+  geom_point(position = position_dodge(0.2), size = 2) + 
+  geom_errorbar(aes(ymin = or.conf.low, ymax = or.conf.high), width = 0, 
+                position = position_dodge(0.2), lwd = 1) +
+  coord_flip() +
+  theme_bw() +
+  labs(y = 'Association with Self-Report Baseline Suicidal Ideation\nOdds Ratio', x=NULL, color = 'Cohort', title = 'B') +
+  scale_y_log10() +
+  theme(legend.position = 'bottom', 
+        text = element_text(face='bold')) +
+  scale_color_manual(values = maps_predict_colors)
+
+
+
+fig6_twostage = cowplot::plot_grid(combined_stb_or_plot, combined_si_or_plot, nrow = 2, axis = 'v', align = 'lr')
+
+cowplot::save_plot(fig6_twostage, file = '../figures/supplemental/rev1_added/lexicon_vs_two_stage.png',
+                   base_width = 7, base_height = 6)
+```
+
+
+# PREDICT bootstrapping 
+```{r}
+n_iter = 100
+
+boot_output = data.frame(iter = 0)
+
+start_time = Sys.time()
+for (i in 1:n_iter){
+  #print(i)
+  
+  # only run if not already run for that iteration
+  existing_outputs = dplyr::filter(boot_output, iter == i)
+  if (nrow(existing_outputs) != 0){
+    next
+  }else{
+   print(c('Boostrap iter', i))
+  }
+  
+  boot_tmp=one_bootstrap_gpt(seed=i, df = predict_for_analysis %>% dplyr::select(SSI19_i=SSI19_total_i, everything()))
+  if(i == 1){
+    boot_output = boot_tmp
+    }
+  else{
+      boot_output = rbind(boot_output, boot_tmp)
+  }
+  end_time = Sys.time()
+  print(end_time - start_time)
+  time_elapsed = end_time - start_time
+  save(boot_output, time_elapsed, file = '../model_outputs_step2/bootstrap_outputs_gpt_vs_lexicon_predict.rda')
+}
+
+```

@@ -67,28 +67,21 @@ maps = maps %>%
   ungroup()
 
 
-maps = dplyr::filter(maps, total_message > 1000)
+maps = dplyr::filter(maps, total_message >= 1000)
 
 sum(maps$flag_bin)
 100 *sum(maps$flag_bin) / nrow(maps)
+```
 
-maps_days = maps %>%
-  mutate(date = lubridate::date(tm_message_start)) %>%
-  group_by(ID, GROUP, Control, SSI19_i, age, date) %>%
-  summarise(daily_flagged = sum(flag_bin),
-            daily_count = n(), 
-            any_daily_flagged = ifelse(daily_flagged > 0, 1, 0)) %>%
-  ungroup() %>%
-  group_by(ID) %>%
-  mutate(total_count = n()) %>%
-  ungroup()
+### Make sure not to include any excluded MAPS participants
+```{r}
+maps_inclusion = read_csv('/Volumes/AUERBACHLAB/Columbia/MAPS_Data/Analysis/ID_FINAL/id_list_compiled_2026-02-10.csv')
 
+maps_include_ids = maps_inclusion %>%
+  dplyr::filter(!is.na(study_id), !grepl('ineligible', notes_main_idlist), !grepl('not eligible', notes_main_idlist))
+removed_ids = dplyr::filter(maps, !ID %in% maps_include_ids$study_id)
 
-unique(maps$id_app[grepl('<null>', maps$id_app)])
-
-maps_app_null = maps %>% dplyr::filter(grepl('<null>', id_app))
-
-nrow(maps_app_null) / nrow(maps)
+maps = dplyr::filter(maps, ID %in% maps_include_ids$study_id)
 ```
 
 ```{r}
@@ -119,21 +112,8 @@ m_maps_stb <- glmmTMB(
   data = dplyr::select(maps, ID, age, flag_bin, Control) %>% na.omit()
 )
 
-m_maps_stb_days <- glmmTMB(
-  any_daily_flagged ~ Control + age + daily_count + total_count + (1 | ID),
-  family = binomial(link = "logit"),
-  data = maps_days %>% na.omit()
-)
 
 summary(m_maps_stb)
-summary(m_maps_stb_days)
-
-
-emm_maps_group_days <- emmeans::emmeans(m_maps_stb_days, ~Control, type = "response") %>%
-  as.data.frame() %>%
-  mutate(cohort = 'MAPS') %>%
-  mutate(GROUP = ifelse(Control ==1, 'Psychiatric Control','STB')) %>%
-  dplyr::select(-Control)
 
 emm_maps <- emmeans::emmeans(m_maps_stb, ~Control, type = "response") %>%
   as.data.frame() %>%
@@ -144,11 +124,6 @@ emm_maps <- emmeans::emmeans(m_maps_stb, ~Control, type = "response") %>%
 emmeans::emmeans(m_maps_stb, ~Control, type = "response") %>%
   pairs() %>%
   confint()
-
-emmeans::emmeans(m_maps_stb_days, ~Control, type = "response") %>%
-  pairs() %>%
-  confint()
-
 ```
 
 
@@ -168,7 +143,7 @@ sum(predict$flag_bin)
 100 *sum(predict$flag_bin) / nrow(predict)
 
 
-load('/Volumes/AUERBACHLAB/Columbia/SP_Data/Analysis/Wrangling/selfreport/predict_demo_05.22.25.Rda')
+load('/Volumes/AUERBACHLAB/Columbia/SP_Data/Analysis/Wrangling/Self_Report//predict_demo_01.05.26.Rda')
 
 table(df$age)
 
@@ -181,6 +156,9 @@ predict_stb = df %>%
   mutate(lifetime_stb = ifelse(
     cssrsLifetimeMostSevere > 2 | cssrsLifetimeAttempt ==1 |
     cssrsPast2moMostSevere > 2, 1, 0),
+    lifetime_stb = ifelse(
+     is.na(lifetime_stb) & SSI21_total_i == 0, 0, lifetime_stb
+    ),
     stb_group = case_when(
       lifetime_stb ==1 ~ 'Lifetime STB',
       lifetime_stb ==0 & (group=='MDD' | group=='remMDD') ~ 'Lifetime MDD',
@@ -220,18 +198,7 @@ predict = predict %>%
   ungroup()
 
 
-predict = dplyr::filter(predict, total_message > 1000)
-
-predict_days = predict %>%
-  mutate(date = lubridate::date(tm_message_start)) %>%
-  group_by(ID, group, stb_group, SSI19_total_i, age, lifetime_stb, date) %>%
-  summarise(daily_flagged = sum(flag_bin),
-            daily_count = n(), 
-            any_daily_flagged = ifelse(daily_flagged > 0, 1, 0)) %>%
-  ungroup() %>%
-  group_by(ID) %>%
-  mutate(total_count = n()) %>%
-  ungroup()
+predict = dplyr::filter(predict, total_message >= 1000)
 ```
 
 
@@ -242,12 +209,6 @@ m_predict_si <- glmmTMB(
   data = dplyr::select(predict, ID, age, SSI19_total_i, flag_bin) %>% na.omit()
 )
 
-m_predict_si_days <- glmmTMB(
-  any_daily_flagged ~ SSI19_total_i + age + daily_count + total_count + (1 | ID),
-  family = binomial(link = "logit"),
-  data = predict_days %>% na.omit()
-)
-
 
 m_predict_si_z <- glmmTMB(
   flag_bin ~ SSI19_total_i + age + (1 | ID),
@@ -255,7 +216,6 @@ m_predict_si_z <- glmmTMB(
   data = dplyr::select(predict, ID, age, SSI19_total_i, flag_bin) %>% na.omit() %>% mutate(SSI19_total_i = scale(SSI19_total_i))
 )
 
-summary(m_predict_si_days)
 summary(m_predict_si)
 summary(m_predict_si_z)
 
@@ -294,12 +254,6 @@ predict_si_emmeans = emmeans::emmeans(m_predict_si, specs = ~SSI19_total_i, type
   as.data.frame() %>%
   mutate(cohort = 'PREDICT') 
 
-predict_si_emmeans_days = emmeans::emmeans(m_predict_si_days, specs = ~SSI19_total_i, type = 'response',
-                                      at = list(SSI19_total_i = 0:38)) %>%
-  as.data.frame() %>%
-  mutate(cohort = 'PREDICT') %>%
-  dplyr::rename(., 'SSI19_i'='SSI19_total_i')
-
 predict_si_emmeans = predict_si_emmeans %>%
   dplyr::rename(., 'SSI19_i'='SSI19_total_i')
 
@@ -315,35 +269,7 @@ predict_si_summary = predict %>%
   dplyr::select(SSI19_i=SSI19_total_i, everything()) %>%
   mutate(cohort = 'PREDICT')
 
-predict_si_summary_days = predict_days %>%
-  group_by(ID, SSI19_total_i) %>%
-  summarise(prob = sum(any_daily_flagged)/n(), count = n()) %>%
-  dplyr::select(SSI19_i=SSI19_total_i, everything()) %>%
-  mutate(cohort = 'PREDICT')
-
-maps_si_summary_days = maps_days %>%
-  group_by(ID, SSI19_i) %>%
-  summarise(prob = sum(any_daily_flagged)/n(), count = n()) %>%
-  mutate(cohort = 'MAPS')
-
 si_emmeans = rbind(predict_si_emmeans, maps_si_emmeans) %>% dplyr::filter(SSI19_i <= 32)
-
-
-si_plt = ggplot(data = si_emmeans, aes(x = SSI19_i, y = prob*1000)) +
-  geom_point(data = predict_si_summary, aes(color = cohort), alpha = 0.5) +
-  geom_point(data = maps_si_summary, aes(color = cohort), alpha = 0.5) +
-  geom_line(aes(color = cohort), lwd = 2) +
-  geom_ribbon(aes(ymin = asymp.LCL*1000, ymax = asymp.UCL*1000, fill = cohort), alpha = 0.2) +
-  labs(y = 'Rate of Text Flagged as Suicide-Related\nPer 1000 Entries',
-       x = 'Baseline Suicidal Ideation (Beck SSI Self-Report)',
-       title = 'Flagged Suicidal Language\nAs a Function of Baseline Suicidal Ideation Severity',
-       color = 'Cohort', fill = 'Cohort') +
-  theme_bw()
-
-si_summary_combined = rbind(maps_si_summary, predict_si_summary)
-
-
-
 
 
 ```
@@ -366,13 +292,6 @@ m_predict_group <- glmmTMB(
   data = dplyr::select(predict, ID, age, stb_group, flag_bin) %>% na.omit()
 )
 
-m_predict_group_days <- glmmTMB(
-  any_daily_flagged ~ stb_group + age + (1 | ID),
-  family = binomial(link = "logit"),
-  data = predict_days %>% na.omit()
-)
-
-summary(m_predict_group_days) 
 
 summary(m_predict_group)
 
@@ -387,17 +306,7 @@ emm_predict_stb <- emmeans(m_predict_stb, ~lifetime_stb, type = "response") %>%
   mutate(GROUP = ifelse(GROUP==1, 'Lifetime STB', 'No STB')) 
 
 
-
-emm_predict_days <- emmeans(m_predict_group_days, ~ stb_group, type = "response") %>%
-  as.data.frame() %>%
-  mutate(cohort = 'PREDICT') %>%
-  dplyr::rename(., 'GROUP'='stb_group')
-
 emmeans(m_predict_group, ~ stb_group, type = "response") %>%
-  pairs(reverse=TRUE) %>%
-  confint()
-
-emmeans(m_predict_group_days, ~ stb_group, type = "response") %>%
   pairs(reverse=TRUE) %>%
   confint()
 

@@ -25,7 +25,7 @@ theme_set(theme_bw())
 
 ```{r}
 maps_selfreport = read_csv('/Volumes/AUERBACHLAB/Columbia/MAPS_Data/Analysis/Wrangling/Self_Report/data/selfreport_07.11.2024.csv') %>% 
-  dplyr::select(ID, age, GROUP, Control, SSI19_i, sex, iPhone, SITE) 
+  dplyr::select(ID, age, GROUP, Control, SSI19_i, sex, iPhone, SITE, MFQ_i) 
 
 maps = read_csv('../data_stage2/maps_flagged_vs_predict_final_2025-07-28.csv')
 
@@ -56,6 +56,17 @@ maps = maps %>% dplyr::select(-filepath)
 gc()
 ```
 
+
+### Make sure not to include any excluded MAPS participants
+```{r}
+maps_inclusion = read_csv('/Volumes/AUERBACHLAB/Columbia/MAPS_Data/Analysis/ID_FINAL/id_list_compiled_2026-02-10.csv')
+
+maps_include_ids = maps_inclusion %>%
+  dplyr::filter(!is.na(study_id), !grepl('ineligible', notes_main_idlist), !grepl('not eligible', notes_main_idlist))
+removed_ids = dplyr::filter(maps, !ID %in% maps_include_ids$study_id)
+
+maps = dplyr::filter(maps, ID %in% maps_include_ids$study_id)
+```
 
 ```{r}
 maps = left_join(maps, maps_selfreport %>% mutate(ID = as.character(ID)), by = 'ID')
@@ -124,6 +135,9 @@ predict_stb = df %>%
   mutate(lifetime_stb = ifelse(
     cssrsLifetimeMostSevere > 2 | cssrsLifetimeAttempt ==1 |
     cssrsPast2moMostSevere > 2, 1, 0),
+    lifetime_stb = ifelse(
+     is.na(lifetime_stb) & SSI21_total_i == 0, 0, lifetime_stb
+    ),
     stb_group = case_when(
       lifetime_stb ==1 ~ 'Lifetime STB',
       lifetime_stb ==0 & (group=='MDD' | group=='remMDD') ~ 'Lifetime MDD',

@@ -1,0 +1,114 @@
+---
+title: "Results of Lexicon+LLM vs Lexicon Alone Bootstrapping Analyses"
+author: "Paul Alexander Bloom"
+date: "2025-05-13"
+output: html_document
+---
+
+
+To compare whether lexicon codings alone vs human coding (e.g., true positives) are more strongly associated with STB history/SI
+Bootstrap, run models, compare odds ratios for each bootstrap iteration
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(purrr)
+library(glmmTMB)
+library(emmeans)
+library(lubridate)
+library(ggplot2)
+library(ggtext)
+library(broom.mixed)
+source('helper_functions.R')
+options(scipen = 999)
+```
+# MAPS
+
+
+```{r}
+load('../model_outputs_step2/bootstrap_outputs_gpt_vs_lexicon_maps.rda')
+
+```
+
+# Summarize bootstrap outputs
+```{r}
+stb_compare_maps = boot_output %>% dplyr::filter(term == 'lifetime_stb')
+si_compare_maps = boot_output %>% dplyr::filter(term == 'SSI19_i')
+
+
+stb_compare_maps = stb_compare_maps %>%
+  pivot_wider(id_cols = 'iter', names_from = 'coding', values_from = 'estimate') %>%
+  mutate(ratio= gpt / lexicon,
+         above_1 = ratio > 1)
+
+si_compare_maps = si_compare_maps %>%
+  pivot_wider(id_cols = 'iter', names_from = 'coding', values_from = 'estimate') %>%
+  mutate(ratio= gpt / lexicon,
+         above_1 = ratio > 1)
+
+```
+
+stb odds ratio comparison
+```{r}
+sum(stb_compare_maps$above_1 / nrow(stb_compare_maps))
+mean(stb_compare_maps$ratio)
+
+quantile(stb_compare_maps$ratio, c(.025, .975))
+```
+
+si odds ratio comparison
+```{r}
+
+sum(si_compare_maps$above_1 / nrow(si_compare_maps))
+mean(si_compare_maps$ratio)
+
+quantile(si_compare_maps$ratio, c(.025, .975))
+
+```
+
+# PREDICT
+
+```{r}
+load('../model_outputs_step2/bootstrap_outputs_gpt_vs_lexicon_predict.rda')
+
+```
+
+# Summarize bootstrap outputs
+```{r}
+stb_compare_predict = boot_output %>% dplyr::filter(term == 'lifetime_stb')
+si_compare_predict = boot_output %>% dplyr::filter(term == 'SSI19_i')
+
+
+stb_compare_predict = stb_compare_predict %>%
+  pivot_wider(id_cols = 'iter', names_from = 'coding', values_from = 'estimate') %>%
+  mutate(ratio= gpt / lexicon,
+         above_1 = ratio > 1)
+
+si_compare_predict = si_compare_predict %>%
+  pivot_wider(id_cols = 'iter', names_from = 'coding', values_from = 'estimate') %>%
+  mutate(ratio= gpt / lexicon,
+         above_1 = ratio > 1)
+
+```
+
+stb odds ratio comparison
+```{r}
+sum(stb_compare_predict$above_1 / nrow(stb_compare_predict))
+mean(stb_compare_predict$ratio)
+
+quantile(stb_compare_predict$ratio, c(.025, .975))
+```
+
+si odds ratio comparison
+```{r}
+
+sum(si_compare_predict$above_1 / nrow(si_compare_predict))
+mean(si_compare_predict$ratio)
+
+quantile(si_compare_predict$ratio, c(.025, .975))
+
+```
+

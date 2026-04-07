@@ -1,7 +1,7 @@
 ---
 title: "Main Step 2 Analyses of MAPS & PREDICT Flagged Data"
 author: "Paul Alexander Bloom"
-date: "2025-05-13"
+date: "2026-04-05"
 output: html_document
 ---
 
@@ -21,13 +21,15 @@ library(ggtext)
 maps_predict_colors = c('darkred', '#00BFC4')
 ```
 
-# Load in MAPS data
+# Load both datasets first to track inclusion numbers for analyses
 
+
+## MAPS
 ```{r}
 maps_selfreport = read_csv('/Volumes/AUERBACHLAB/Columbia/MAPS_Data/Analysis/Wrangling/Self_Report/data/selfreport_07.11.2024.csv') %>% 
   dplyr::select(ID, age, GROUP, Control, SSI19_i) 
-
 maps = read_csv('../data_stage2/maps_flagged_vs_predict_final_2025-07-28.csv')
+
 
 # Code lexicon flagging
 maps = mutate(maps, flag_bin =
@@ -36,7 +38,7 @@ maps = mutate(maps, flag_bin =
                             suicide_lexicon_custom_pairs ==1, 1, 0))
 # Make sure no duplicates
 maps = maps %>%
-  distinct(corrected_message, tm_message_start, tm_message_end, id_app, .keep_all = TRUE)
+  distinct(filepath, corrected_message, tm_message_start, tm_message_end, id_app, .keep_all = TRUE)
 
 maps = dplyr::select(maps,
                             -contains('suicide'),
@@ -53,40 +55,154 @@ maps = left_join(maps, maps_unique_id, by = 'filepath')
 maps = maps %>% dplyr::select(-filepath)
 
 gc()
-```
 
+### Make sure not to include any excluded MAPS participants
+maps_inclusion = read_csv('/Volumes/AUERBACHLAB/Columbia/MAPS_Data/Analysis/ID_FINAL/id_list_compiled_2026-02-10.csv')
+
+maps_include_ids = maps_inclusion %>%
+  dplyr::filter(!is.na(study_id), !grepl('ineligible', notes_main_idlist), !grepl('not eligible', notes_main_idlist))
+
+removed_ids = dplyr::filter(maps, !ID %in% maps_include_ids$study_id)
+
+maps = dplyr::filter(maps, ID %in% maps_include_ids$study_id)
+
+
+
+maps = left_join(maps, maps_selfreport %>% mutate(ID = as.character(ID)), by = 'ID')
+
+maps_entries_per_participant = maps %>%
+  mutate(date = as.Date(tm_message_start)) %>%
+  group_by(ID, Control) %>%
+  summarise(n_entries = n()) %>%
+  mutate(cohort = 'MAPS', 
+         lifetime_stb = ifelse(Control ==1, 0, 1))
 
 # MAPS total proportion flagged
-```{r}
 maps_n = nrow(maps)
 sum_maps_flagged = sum(maps$flag_bin) 
 pct_maps_flagged = 100 *sum(maps$flag_bin) / nrow(maps)
 ```
 
-# MAPS Data Cleaning / Prep for Models
+## PREDICT
 
 ```{r}
-maps = left_join(maps, maps_selfreport %>% mutate(ID = as.character(ID)), by = 'ID')
+predict = read_csv('../data_stage2/predict_flagged_vs_maps_final_2025-08-11.csv')
 
-by_id_summary = maps %>%
+# Code lexicon flagging
+predict = mutate(predict, flag_bin =
+                   ifelse(suicide_lexicon_custom_token == 1 |
+                            celeb_historical_suicide_token ==1 |
+                            suicide_lexicon_custom_pairs ==1, 1, 0))
+
+# Make sure no duplicates
+predict = predict %>%
+  distinct(corrected_message, tm_message_start, tm_message_end, id_app, filepath, .keep_all = TRUE)
+
+nrow(predict)
+
+# what proportion of predict entries were flagged?
+predict_n = nrow(predict)
+sum_predict_flagged = sum(predict$flag_bin)
+pct_predict_flaggged = 100 *sum(predict$flag_bin) / nrow(predict)
+
+# load demographic data (df) for predict
+load('/Volumes/AUERBACHLAB/Columbia/SP_Data/Analysis/Wrangling/Self_Report/predict_demo_01.05.26.Rda')
+
+table(df$age)
+
+df_predict_total= dplyr::filter(df, !is.na(group), !is.na(age))
+
+predict_stb = df %>%
+  dplyr::select(., 
+                ID, gender, orientation, cis, cishet, age, 
+                contains('cssrs'),
+                group,
+                contains('ssi')) %>%
+  mutate(lifetime_stb = ifelse(
+    cssrsLifetimeMostSevere > 2 | cssrsLifetimeAttempt ==1 |
+    cssrsPast2moMostSevere > 2, 1, 0),
+    lifetime_stb = ifelse(
+     is.na(lifetime_stb) & SSI21_total_i == 0, 0, lifetime_stb
+    ),
+    stb_group = case_when(
+      lifetime_stb ==1 ~ 'Lifetime STB',
+      lifetime_stb ==0 & (group=='MDD' | group=='remMDD') ~ 'Lifetime MDD',
+      lifetime_stb ==0 & group=='HC' ~ 'HC',
+    ),
+    recent_active_ideation = ifelse(cssrsPast2moMostSevere > 2, 1, 0)
+  ) %>%
+  dplyr::select(-contains('cssrs'))
+
+predict = dplyr::select(predict,
+                            -contains('suicide'),
+                            -cat_tz,
+                            -contains('emoji'))
+
+# get PREDICT IDs from filepaths
+predict_unique_id = data.frame(filepath=unique(predict$filepath))
+predict_unique_id = mutate(predict_unique_id, ID = str_extract(filepath, "(?<=PREDICT/)[^/]+"))
+
+predict = left_join(predict, predict_unique_id, by = 'filepath')
+predict = left_join(predict, predict_stb, by = 'ID')
+
+# entries per participant
+predict_entries_per_participant = predict %>%
+  mutate(date = as.Date(tm_message_start)) %>%
+  group_by(ID, lifetime_stb, SSI19_total_i) %>%
+  summarise(n_entries = n()) %>%
+  mutate(cohort = 'PREDICT') %>%
+  dplyr::filter(!(is.na(lifetime_stb) & is.na(SSI19_total_i)))
+
+```
+
+# Tally included versus excluded in MAPS and PREDICT
+
+```{r}
+predict_entries_per_participant = mutate(predict_entries_per_participant, inc_1000 = n_entries >= 1000)
+maps_entries_per_participant = mutate(maps_entries_per_participant, inc_1000 = n_entries >= 1000)
+
+
+maps_entries_per_participant %>%
+  group_by(inc_1000) %>%
+  count()
+
+predict_entries_per_participant %>%
+  group_by(inc_1000) %>%
+  count()
+
+
+maps_entries_per_participant %>%
+  group_by(inc_1000, lifetime_stb) %>%
+  count()
+
+predict_entries_per_participant %>%
+  group_by(inc_1000, lifetime_stb) %>%
+  count()
+```
+
+
+
+
+## MAPS Data Cleaning / Prep for Models
+
+
+```{r}
+by_id_summary_maps = maps %>%
   group_by(ID)%>%
   summarise(total_message = n(),
             total_flagged = sum(flag_bin==1),
             proportion_flagged = total_flagged/total_message)
 
 # difference in # of entries as a function of STB history
-maps_n_entries = maps %>%
+maps_entries_per_day = maps %>%
   mutate(date = as.Date(tm_message_start)) %>%
   group_by(ID, Control, date) %>%
   summarise(n_entries = n()) %>%
   mutate(cohort = 'MAPS', 
          lifetime_stb = ifelse(Control ==1, 0, 1))
 
-m_maps_n_entries = lmerTest::lmer(data = maps_n_entries, n_entries ~ Control + (1|ID))
-broom.mixed::tidy(m_maps_n_entries, conf.int=TRUE)
-
 # what proportion of subjects have any flagged
-dplyr::filter(by_id_summary, total_flagged > 0) %>% nrow() / nrow(by_id_summary)
+dplyr::filter(by_id_summary_maps, total_flagged > 0) %>% nrow() / nrow(by_id_summary_maps)
 
 
 # filter out participants with under 1000 entries
@@ -95,19 +211,32 @@ maps = maps %>%
   mutate(total_message = n()) %>%
   ungroup()
 
-maps = dplyr::filter(maps, total_message >= 1000)
+# count excluded participants
+maps_excluded = dplyr::filter(maps, total_message < 1000)
 
+maps_excluded %>%
+  group_by(ID, Control) %>%
+  count() %>%
+  group_by(Control) %>%
+  count()
+```
+
+## Before primary analyses, remove participants with under 1000 total messages
+
+```{r}
+maps = dplyr::filter(maps, total_message >= 1000)
+```
+
+
+```{r}
 maps_days = maps %>%
   mutate(date = lubridate::date(tm_message_start)) %>%
-  group_by(ID, GROUP, Control, SSI19_i, age, date) %>%
+  group_by(ID, GROUP, Control, SSI19_i, age, date, total_message) %>%
   summarise(daily_flagged = sum(flag_bin),
             daily_count = n(), 
             any_daily_flagged = ifelse(daily_flagged > 0, 1, 0),
             daily_flag_pct = 100*daily_flagged/daily_count) %>%
-  ungroup() %>%
-  group_by(ID) %>%
-  mutate(total_count = n()) %>%
-  ungroup()
+  ungroup() 
 
 maps_by_participant = maps %>%
   mutate(date = lubridate::date(tm_message_start)) %>%
@@ -116,13 +245,10 @@ maps_by_participant = maps %>%
             count = n(), 
             any_flagged = ifelse(flagged > 0, 1, 0),
             flag_pct = 100*flagged/count) %>%
-  ungroup() %>%
-  group_by(ID) %>%
-  mutate(total_count = n()) %>%
-  ungroup()
+  ungroup() 
 ```
 
-# MAPS models as a function of baseline suicidal ideation
+## MAPS models as a function of baseline suicidal ideation
 
 ```{r}
 m_maps_si <- glmmTMB(
@@ -131,30 +257,25 @@ m_maps_si <- glmmTMB(
   data = dplyr::select(maps, ID, age, SSI19_i, flag_bin) %>% na.omit()
 )
 
-m_maps_si_days <- glmmTMB(
-  any_daily_flagged ~ SSI19_i + age + daily_count + total_count + (1 | ID),
-  family = binomial(link = "logit"),
-  data = maps_days %>% na.omit() %>% mutate(SSI19_i = scale(SSI19_i))
-)
-
-m_maps_si_days_pct <- glmmTMB(
-  daily_flag_pct ~ SSI19_i + age + daily_count + total_count + (1 | ID),
-  data = maps_days %>% na.omit()
-)
-
-m_maps_si_participant = lm(data = maps_by_participant,
-                           flag_pct ~ scale(SSI19_i) + age + count)
-
-summary(m_maps_si_participant)
-
-
-
 m_maps_si_z <- glmmTMB(
   flag_bin ~ SSI19_i + age + (1 | ID),
   family = binomial(link = "logit"),
   data = dplyr::select(maps, ID, age, SSI19_i, flag_bin) %>% na.omit() %>% mutate(SSI19_i = scale(SSI19_i))
 )
 
+m_maps_si_days <- glmmTMB(
+  any_daily_flagged ~ SSI19_i + age + daily_count + total_message + (1 | ID),
+  family = binomial(link = "logit"),
+  data = maps_days %>% na.omit() %>% mutate(SSI19_i = scale(SSI19_i))
+)
+
+m_maps_si_days_pct <- glmmTMB(
+  daily_flag_pct ~ SSI19_i + age + daily_count + total_message + (1 | ID),
+  data = maps_days %>% na.omit()
+)
+
+m_maps_si_participant = lm(data = maps_by_participant,
+                           flag_pct ~ scale(SSI19_i) + age + count)
 
 
 summary(m_maps_si)
@@ -178,7 +299,7 @@ broom.mixed::tidy(m_maps_si_days_pct, exponentiate=TRUE, conf.int=TRUE)
 
 ```
 
-# MAPS analyses as a function of STB history
+## MAPS analyses as a function of STB history
 
 Including covarying for times of local COVID-related school closures
 
@@ -193,6 +314,10 @@ maps <- maps %>%
     )
   )
 
+
+maps %>% group_by(ID, Control) %>% count() %>%
+  group_by(Control) %>%
+  count()
 
 m_maps_si_schoolclosure <- glmmTMB(
   flag_bin ~ SSI19_i + age + schoolclosure + (1 | ID),
@@ -214,13 +339,13 @@ m_maps_stb <- glmmTMB(
 )
 
 m_maps_stb_days <- glmmTMB(
-  any_daily_flagged ~ Control + age + daily_count + total_count + (1 | ID),
+  any_daily_flagged ~ Control + age + daily_count + total_message + (1 | ID),
   family = binomial(link = "logit"),
   data = maps_days %>% na.omit()
 )
 
 m_maps_stb_days_pct <- glmmTMB(
-  daily_flag_pct ~ Control + age + daily_count + total_count + (1 | ID),
+  daily_flag_pct ~ Control + age + daily_count + total_message + (1 | ID),
   data = maps_days %>% na.omit()
 )
 
@@ -262,7 +387,6 @@ emmeans::emmeans(m_maps_stb_days, ~Control, type = "response") %>%
 
 emmeans::emmeans(m_maps_stb_schoolclosure, ~Control, type = "response") %>%
   pairs() %>%
-  confint()
 
 emmeans::emmeans(m_maps_stb_schoolclosure, ~schoolclosure, type = "response") %>%
   pairs(reverse=TRUE) %>%
@@ -329,8 +453,7 @@ timeofday_or_maps = emmeans::emmeans(m_maps_time, specs = 'timebin', type = 'res
   dplyr::select(contrast, or_string) %>%
   mutate(contrast = as.character(contrast))
 
-write.csv(timeofday_or_maps, file = '../model_outputs_step2/maps_time_of_day.csv', row.names=FALSE)
-
+write.csv(timeofday_or_maps, file = '../model_outputs_step2/maps_time_of_day_rev1.csv', row.names=FALSE)
 
 
 timeofday_emmeans_maps$timebin <- factor(timeofday_emmeans_maps$timebin, levels = timebin_levels)
@@ -350,84 +473,11 @@ time_of_day_maps = timeofday_emmeans_maps %>%
 
 Loading in PREDICT Data
 ```{r}
-predict = read_csv('../data_stage2/predict_flagged_vs_maps_final_2025-08-11.csv')
-
-predict = mutate(predict, flag_bin =
-                   ifelse(suicide_lexicon_custom_token == 1 |
-                            celeb_historical_suicide_token ==1 |
-                            suicide_lexicon_custom_pairs ==1, 1, 0))
-
-predict = predict %>%
-  distinct(corrected_message, tm_message_start, tm_message_end, id_app, filepath, .keep_all = TRUE)
-
-nrow(predict)
-
-# what proportion of predict entries were flagged?
-predict_n = nrow(predict)
-sum_predict_flagged = sum(predict$flag_bin)
-pct_predict_flaggged = 100 *sum(predict$flag_bin) / nrow(predict)
-
-
-load('/Volumes/AUERBACHLAB/Columbia/SP_Data/Analysis/Wrangling/selfreport/predict_demo_05.22.25.Rda')
-
-table(df$age)
-
-predict_stb = df %>%
-  dplyr::select(., 
-                ID, gender, orientation, cis, cishet, age, 
-                contains('cssrs'),
-                group,
-                contains('ssi')) %>%
-  mutate(lifetime_stb = ifelse(
-    cssrsLifetimeMostSevere > 2 | cssrsLifetimeAttempt ==1 |
-    cssrsPast2moMostSevere > 2, 1, 0),
-    stb_group = case_when(
-      lifetime_stb ==1 ~ 'Lifetime STB',
-      lifetime_stb ==0 & (group=='MDD' | group=='remMDD') ~ 'Lifetime MDD',
-      lifetime_stb ==0 & group=='HC' ~ 'HC',
-    ),
-    recent_active_ideation = ifelse(cssrsPast2moMostSevere > 2, 1, 0)
-  ) %>%
-  dplyr::select(-contains('cssrs'))
-
-predict = dplyr::select(predict,
-                            -contains('suicide'),
-                            -cat_tz,
-                            -contains('emoji'))
-
-predict_stb_nona = predict_stb %>% dplyr::filter(!is.na(lifetime_stb)) 
-
-predict_stb_nona %>%
-  group_by(lifetime_stb) %>%
-  summarise(pct = n()/nrow(predict_stb_nona))
-
-predict_stb_nona %>%
-  group_by(recent_active_ideation) %>%
-  summarise(pct = n()/nrow(predict_stb_nona))
-
-table(predict_stb_nona$group) / nrow(predict_stb_nona)
-
-predict_unique_id = data.frame(filepath=unique(predict$filepath))
-predict_unique_id = mutate(predict_unique_id, ID = str_extract(filepath, "(?<=PREDICT/)[^/]+"))
-
-predict = left_join(predict, predict_unique_id, by = 'filepath')
-
-predict = left_join(predict, predict_stb, by = 'ID')
-
-predict_n_entries = predict %>%
-  mutate(date = as.Date(tm_message_start)) %>%
-  group_by(ID, lifetime_stb, date) %>%
-  summarise(n_entries = n()) %>%
-  mutate(cohort = 'PREDICT')
-
-m_predict_n_entries = lmerTest::lmer(data = predict_n_entries, n_entries ~ lifetime_stb+ (1|ID))
-broom.mixed::tidy(m_predict_n_entries, conf.int=TRUE)
-
 predict_demo = dplyr::filter(df, ID %in% predict$ID)
 
 
 by_id_summary_predict = predict %>%
-  group_by(ID)%>%
+  group_by(ID, lifetime_stb, SSI19_total_i)%>%
   summarise(total_message = n(),
             total_flagged = sum(flag_bin==1),
             proportion_flagged = total_flagged/total_message)
@@ -445,7 +495,7 @@ table(predict_demo$age)
 mean(predict_demo$age, na.rm=TRUE)
 table(predict_demo$gender, useNA = 'ifany' ) / nrow(predict_demo)
 table(predict_demo$group)
-table(predict_demo$stb_group)
+table(predict_demo$lifetime_stb)
 
 predict_demo %>%
   dplyr::select(., 
@@ -456,6 +506,9 @@ predict_demo %>%
   mutate(lifetime_stb = ifelse(
     cssrsLifetimeMostSevere > 2 | cssrsLifetimeAttempt ==1 |
     cssrsPast2moMostSevere > 2, 1, 0),
+    lifetime_stb = ifelse(
+     is.na(lifetime_stb) & SSI21_total_i == 0, 0, lifetime_stb
+    ),
     stb_group = case_when(
       lifetime_stb ==1 ~ 'Lifetime STB',
       lifetime_stb ==0 & (group=='MDD' | group=='remMDD') ~ 'Lifetime MDD',
@@ -476,9 +529,12 @@ predict_demo %>%
   mutate(lifetime_stb = ifelse(
     cssrsLifetimeMostSevere > 2 | cssrsLifetimeAttempt ==1 |
     cssrsPast2moMostSevere > 2, 1, 0),
+        lifetime_stb = ifelse(
+     is.na(lifetime_stb) & SSI21_total_i == 0, 0, lifetime_stb
+    ),
     stb_group = case_when(
       lifetime_stb ==1 ~ 'Lifetime STB',
-      lifetime_stb ==0 & (group=='MDD' | group=='remMDD') ~ 'Lifetime MDD',
+      lifetime_stb ==0 & (group=='MDD' | group=='r emMDD') ~ 'Lifetime MDD',
       lifetime_stb ==0 & group=='HC' ~ 'HC',
     )
   ) %>%
@@ -502,15 +558,12 @@ predict = dplyr::filter(predict, total_message >= 1000)
 
 predict_days = predict %>%
   mutate(date = lubridate::date(tm_message_start)) %>%
-  group_by(ID, group, stb_group, SSI19_total_i, age, lifetime_stb, date) %>%
+  group_by(ID, group, stb_group, SSI19_total_i, age, lifetime_stb, date, total_message) %>%
   summarise(daily_flagged = sum(flag_bin),
             daily_count = n(), 
             any_daily_flagged = ifelse(daily_flagged > 0, 1, 0),
             daily_flag_pct = 100*sum(daily_flagged)/daily_count) %>%
-  ungroup() %>%
-  group_by(ID) %>%
-  mutate(total_count = n()) %>%
-  ungroup()
+  ungroup() 
 
 predict_by_participant = predict %>%
   mutate(date = lubridate::date(tm_message_start)) %>%
@@ -519,10 +572,7 @@ predict_by_participant = predict %>%
             count = n(), 
             any_flagged = ifelse(flagged > 0, 1, 0),
             flag_pct = 100*flagged/count) %>%
-  ungroup() %>%
-  group_by(ID) %>%
-  mutate(total_count = n()) %>%
-  ungroup()
+  ungroup() 
 
 gc()
 ```
@@ -537,7 +587,7 @@ m_predict_si <- glmmTMB(
 )
 
 m_predict_si_days <- glmmTMB(
-  any_daily_flagged ~ SSI19_total_i + age + daily_count + total_count + (1 | ID),
+  any_daily_flagged ~ SSI19_total_i + age + daily_count + total_message + (1 | ID),
   family = binomial(link = "logit"),
   data = predict_days %>% na.omit() %>% mutate(SSI19_total_i = scale(SSI19_total_i))
 )
@@ -697,6 +747,12 @@ m_predict_stb <- glmmTMB(
 
 summary(m_predict_stb)
 
+sum(is.na(predict$ID))
+sum(is.na(predict$age))
+sum(is.na(predict$lifetime_stb))
+sum(is.na(predict$flag_bin))
+
+
 predict <- predict %>%
   mutate(
     SITE = ifelse(startsWith(ID, '1'), 'CUIMC', 'NW'),
@@ -710,7 +766,7 @@ predict <- predict %>%
 m_predict_si_schoolclosure <- glmmTMB(
   flag_bin ~ SSI19_i + age + schoolclosure + (1 | ID),
   family = binomial(link = "logit"),
-  data = dplyr::select(predict, ID, age, flag_bin, SSI19_total_i, schoolclosure) %>% na.omit() %>% mutate(SSI19_i = scale(SSI19_total_i))
+  data = dplyr::select(predict, ID, age, flag_bin, SSI19_total_i, schoolclosure) %>% mutate(SSI19_i = scale(SSI19_total_i)) %>% na.omit() 
 )
 
 m_predict_stb_schoolclosure <- glmmTMB(
@@ -914,7 +970,7 @@ si_plt_main = ggplot(data = si_emmeans, aes(x = SSI19_i, y = prob*1000)) +
 
 main_panel = cowplot::plot_grid(group_plt_stb_main, si_plt_main, nrow = 1, labels = c('A', 'B'),
                              align = 'h', axis = 'bt', rel_widths = c(1.3, 1))
-cowplot::save_plot(main_panel, filename = '../figures/main/maps_predict_stb_history.png',
+cowplot::save_plot(main_panel, filename = '../figures/main/rev1/fig2_maps_predict_stb_history.png',
                    base_height = 5, base_width = 8.5)
 
 
@@ -978,15 +1034,17 @@ timeofday_or_predict = emmeans::emmeans(m_predict_time, specs = 'timebin', type 
   dplyr::select(contrast, or_string) %>%
   mutate(contrast = as.character(contrast))
 
-write.csv(timeofday_or_predict, file = '../model_outputs_step2/predict_time_of_day.csv', row.names=FALSE)
 
 timeofday_or_combined = left_join(timeofday_or_maps %>% dplyr::select(contrast, 
                                                                       or_string_maps = or_string), timeofday_or_predict, by = 'contrast')
 
-write.csv(timeofday_or_combined, file = '../model_outputs_step2/maps_predict_time_of_day.csv', row.names=FALSE)
+write.csv(timeofday_or_combined, file = '../model_outputs_step2/maps_predict_time_of_day_rev1.csv', row.names=FALSE)
 
+```
 
+## Models for raw quantity of text entries by time of day
 
+```{r}
 maps_by_hour = maps %>%
   mutate(day = as.Date(tm_message_start)) %>%
   group_by(timebin, ID, day) %>%
@@ -1020,21 +1078,30 @@ n_entries_by_time = rbind(predict_hour_n_emmeans, maps_hour_n_emmeans) %>%
   labs(x = 'Time of Day', y = 'Mean # of Text Entries Per 3-Hour Bin', color = 'Cohort') +
   scale_color_manual(values=maps_predict_colors)
 
+predict_entries_per_day = predict %>%
+  mutate(date = as.Date(tm_message_start)) %>%
+  group_by(ID, lifetime_stb, date) %>%
+  summarise(n_entries = n()) %>%
+  mutate(cohort = 'PREDICT')
+
 ggsave(n_entries_by_time, file = '../figures/supplemental/n_entries_by_time.png', height = 4, width = 9)
 
+m_maps_entries_per_day = lmerTest::lmer(data = maps_entries_per_day, n_entries ~ Control + (1|ID))
+m_predict_entries_per_day = lmerTest::lmer(data = predict_entries_per_day, n_entries ~ lifetime_stb + (1|ID))
 
-summary(m_maps_n_entries)
-summary(m_predict_n_entries)
-
-broom.mixed::tidy(m_maps_n_entries, conf.int=TRUE)
-broom.mixed::tidy(m_predict_n_entries, conf.int=TRUE)
+summary(m_maps_entries_per_day)
+summary(m_predict_entries_per_day)
 
 
-stb_n_entries_emmeans = plyr::rbind.fill(m_maps_n_entries %>% emmeans::emmeans(specs = ~Control) %>%
+broom.mixed::tidy(m_maps_entries_per_day, conf.int=TRUE)
+broom.mixed::tidy(m_predict_entries_per_day, conf.int=TRUE)
+
+
+stb_n_entries_emmeans = plyr::rbind.fill(m_maps_entries_per_day %>% emmeans::emmeans(specs = ~Control) %>%
   data.frame() %>%
   mutate(cohort = 'MAPS', 
          lifetime_stb = ifelse(Control ==1, 0, 1)), 
-  m_predict_n_entries %>% emmeans::emmeans(specs = ~lifetime_stb) %>%
+  m_predict_entries_per_day %>% emmeans::emmeans(specs = ~lifetime_stb) %>%
   data.frame() %>%
   mutate(cohort = 'PREDICT'))
 
@@ -1057,6 +1124,7 @@ ggsave(stb_n_entries_plot, file = '../figures/supplemental/n_entries_stb.png', h
 ```
 
 
+## Make MAPS + PREDICT combined time of day plot
 ```{r}
 timeofday_emmeans_predict = emmeans::emmeans(m_predict_time, specs = 'timebin', type = 'response') %>%
   data.frame()
@@ -1094,25 +1162,8 @@ time_of_day_combined = time_of_day_all %>%
   theme(legend.position = 'bottom',
         text = element_text(face='bold')) +
   scale_color_manual(values=maps_predict_colors)
-
 ```
 
-
-```{r}
-maps = maps %>% mutate(
-    timestamp_parsed = ymd_hms(tm_message_start, tz = "UTC"),
-    is_weekend = wday(timestamp_parsed, label = TRUE) %in% c("Sat", "Sun"),
-    summerbreak = month(timestamp_parsed) %in% c(7, 8)
-  )
-
-predict = predict %>% mutate(
-    timestamp_parsed = ymd_hms(tm_message_start, tz = "UTC"),
-    is_weekend = wday(timestamp_parsed, label = TRUE) %in% c("Sat", "Sun"),
-    summerbreak = month(timestamp_parsed) %in% c(7, 8)
-  )
-
-
-```
 
 # By app
 
@@ -1236,7 +1287,7 @@ predict_apps = predict %>%
   dplyr::filter(flag_bin ==1, id_app != '<null>') %>%
   group_by(appname, social) %>%
   summarise(count = n(),
-            prob = count/maps_flag_n) %>%
+            prob = count/predict_flag_n) %>%
   ungroup() %>%
   dplyr::arrange(prob) %>%
   mutate(cohort = 'PREDICT')
@@ -1290,12 +1341,11 @@ time_social_app_plt = cowplot::plot_grid(time_of_day_combined, app_bottomrow,
                    align = 'v', axis = 'lr', 
                    labels = c('A',''))
 
-cowplot::save_plot(time_social_plt, file = '../figures/in_progress/time_social_grid.png',
-                   base_height = 4, base_width = 12)
-
-cowplot::save_plot(time_social_app_plt, file = '../figures/main/time_social_app_grid.png',
+cowplot::save_plot(time_social_app_plt, file = '../figures/main/rev1/time_social_app_grid.png',
                    base_height = 7, base_width = 9.15)
 ```
+
+# Proportions of translated entries / entries at night
 
 ```{r}
 maps_lang = maps %>%
@@ -1305,12 +1355,10 @@ maps_lang = maps %>%
 
 sum(maps_lang$n)
 
-  
 predict_lang = predict %>%
   group_by(language, language_translate) %>%
   count()
    
-  
 table(maps$language_translate)
 
 
@@ -1324,4 +1372,9 @@ predict_night_total = predict %>% group_by(timebin) %>% summarise(n = n(),
 
 sum(maps_night_total$prop)
 sum(predict_night_total$prop)
+```
+
+
+```{r}
+
 ```

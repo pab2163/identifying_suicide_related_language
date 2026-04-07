@@ -120,6 +120,17 @@ maps_days = maps %>%
 outcome_variables = c('flag_bin', 'suicide_related', 'false_positive', 'jokes_hyperbole', 'currfirst', 'first', 'second', 'third', 'support')
 ```
 
+```{r}
+maps_inclusion = read_csv('/Volumes/AUERBACHLAB/Columbia/MAPS_Data/Analysis/ID_FINAL/id_list_compiled_2026-02-10.csv')
+
+maps_include_ids = maps_inclusion %>%
+  dplyr::filter(!is.na(study_id), !grepl('ineligible', notes_main_idlist), !grepl('not eligible', notes_main_idlist))
+removed_ids = dplyr::filter(maps, !ID %in% maps_include_ids$study_id)
+
+maps = dplyr::filter(maps, ID %in% maps_include_ids$study_id)
+```
+
+
 # Model the content conglomerate category outcomes (e.g., `outcome_variables`)
 ```{r}
 maps_long = maps %>%
@@ -204,10 +215,6 @@ maps_stb_or_plot = ggplot(maps_stb_or, aes(x = name_recode, y = estimate, color 
   scale_y_log10() +
   theme(legend.position = 'none')
 
-ggsave(maps_si_coef_plot, file = '../figures/supplemental/labels_si_plot_nospellcheck.png')
-ggsave(maps_stb_or_plot, file = '../figures/supplemental/labels_or_plot_nospellcheck.png')
-
-
 labels_stb_grid = cowplot::plot_grid(maps_stb_or_plot,maps_si_coef_plot,
                    rel_widths = c(1, 1.4), labels = c('A', 'B'))
 
@@ -217,7 +224,32 @@ cowplot::save_plot(labels_stb_grid, file = '../figures/supplemental/labels_stb_p
 
 
 save(maps_stb_or, maps_si_z_coef, file = '../model_outputs_step2/maps_coded_models.rda')
+
+iasr_talk_plot = maps_stb_or %>% 
+  dplyr::filter(name_recode %in% c('True Positive', 'Flagged By Lexicon')) %>%
+  mutate(name_recode = dplyr::recode(name_recode,
+                                     'Flagged By Lexicon'= 'Flagged By Lexicon Alone',
+                                     'True Positive'=' Suicide-Related (Human)',
+                                     'Jokes/Hyperbole'=' Jokes/Hyperbole (Human)',
+                                     'Current, 1st Person\n& Authentic'=' Current, 1st Person\n& Authentic STB (Human)')
+         ) %>%
+  ggplot(data = ., aes(x = name_recode, y = estimate, color = lex)) +
+  geom_hline(yintercept = 1, lty = 2) +
+  geom_point(size = 3) + 
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0, lwd = 1) +
+  coord_flip() +
+  theme_bw() +
+  labs(y = 'STB > Psychiatric Control\nOdds Ratio', x=NULL, color = NULL) +
+  scale_y_log10() +
+  theme(legend.position = 'none') +
+  scale_color_viridis_d(end = 0.6) +
+  theme(text = element_text(face = 'bold'))
+
+
+ggsave(iasr_talk_plot, file = '../figures/talks/iasr_lexicon_human.png', 
+       height = 3, width = 4)
 ```
+
 
 # Models for individual labels
 
@@ -260,6 +292,139 @@ maps_binary_for_descrip = maps_binary %>%
 
 coding_labels = read.csv('../data_stage2/coding_labels.csv')
 
+```
+
+
+# Daily negative binomial regression models
+```{r}
+maps_binary_days = maps %>%
+  mutate(date = lubridate::date(tm_message_start)) %>%
+  dplyr::select(ID, age, SSI19_i, Control, GROUP, date, all_of(binary_cols)) %>%
+  mutate(SSI19_i_z = scale(SSI19_i),
+         stb = ifelse(Control==1, 0, 1)) %>%
+  pivot_longer(cols = all_of(binary_cols)) %>%
+  group_by(ID, GROUP, Control, SSI19_i, age, date, name, SSI19_i_z, stb) %>%
+  summarise(daily_count = sum(value),
+            daily_total = n()) %>%
+  ungroup() %>%
+  group_by(ID) %>%
+  mutate(total_entries = n()) %>%
+  ungroup()
+
+maps_binary_days_nest = maps_binary_days %>%
+  group_by(name) %>%
+  nest()
+
+
+gc()
+
+maps_si_z_models_days = maps_binary_days_nest %>%
+  mutate(model = purrr::map(data, ~glmmTMB(data = ., daily_count ~ SSI19_i_z + age + offset(log(daily_total)) + total_entries + (1|ID), 
+                                           family = nbinom2(link = 'log'))),
+         coef = purrr::map(model, ~broom.mixed::tidy(., conf.int=TRUE, exponentiate=TRUE)))
+
+maps_stb_models_days = maps_binary_days_nest %>%
+  mutate(model = purrr::map(data, ~glmmTMB(data = ., daily_count ~ stb + age + offset(log(daily_total)) + total_entries + (1|ID), 
+                                           family = nbinom2(link = 'log'))),
+         coef = purrr::map(model, ~broom.mixed::tidy(., conf.int=TRUE, exponentiate=TRUE)))
+
+
+maps_si_z_irr_days = maps_si_z_models_days %>% unnest(coef) %>%
+  dplyr::select(-model, -data) %>%
+  dplyr::filter(term == 'SSI19_i_z')
+
+maps_stb_irr_days = maps_stb_models_days %>% unnest(coef) %>%
+  dplyr::select(-model, -data) %>%
+  dplyr::filter(term == 'stb')
+
+coding_labels = read.csv('../data_stage2/coding_labels.csv')
+
+maps_si_z_irr_all_categories_days = left_join(maps_si_z_irr_days, coding_labels, by = 'name')
+maps_stb_irr_all_categories_days = left_join(maps_stb_irr_days, coding_labels, by = 'name')
+
+
+maps_si_z_irr_all_categories_days = maps_si_z_irr_all_categories_days %>% mutate(
+    panel = case_when(
+      str_detect(name, "first") ~ "1st Person",
+      str_detect(name, "second") ~ "2nd Person",
+      str_detect(name, "third") ~ "3rd Person",
+      TRUE ~ "General"
+    ))
+
+
+maps_stb_irr_all_categories_days = maps_stb_irr_all_categories_days %>% mutate(
+    panel = case_when(
+      str_detect(name, "first") ~ "1st Person",
+      str_detect(name, "second") ~ "2nd Person",
+      str_detect(name, "third") ~ "3rd Person",
+      TRUE ~ "General"
+    ))
+
+
+save(maps_stb_irr_all_categories_days, maps_si_z_irr_all_categories_days, file = '../model_outputs_step2/maps_coded_models_allcategories_nbinom.rda')
+
+sig_star_label <- function(df, lower_col, upper_col, boundary) {
+  df <- df %>%
+    mutate(sig_star = case_when(
+      {{ lower_col }} > boundary & {{ upper_col }} > boundary ~ '+',
+      {{ lower_col }} < boundary & {{ upper_col }} < boundary ~ '+',
+      TRUE ~ ''
+    ))
+  return(df)
+}
+
+
+maps_stb_irr_all_categories_days = sig_star_label(maps_stb_irr_all_categories_days, 
+                                            lower_col = conf.low,
+                                            upper_col = conf.high,
+                                            boundary = 1)
+
+maps_si_z_irr_all_categories_days = sig_star_label(maps_si_z_irr_all_categories_days, 
+                                            lower_col = conf.low,
+                                            upper_col = conf.high,
+                                            boundary = 1)
+
+all_categories_stb_nbinom = maps_stb_irr_all_categories_days %>%
+  dplyr::filter(! name %in% c('second_nssi', 'third_nssi', 'art')) %>%
+  ggplot(data=., aes(x = label, y = estimate, color= panel)) +
+  geom_hline(yintercept = 1, lty = 2) +
+  geom_point(size = 2) + 
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0, lwd = 1) +
+  geom_text(aes(label = sig_star, y = 0.05), size = 5, vjust = 0.3) +
+  facet_grid(rows = vars(panel), scales = 'free_y') + 
+  coord_flip() +
+  scale_y_log10() +
+  labs(y = 'Incident Rate Ratio\nLifetime STB > No STB History', x = NULL) +
+  theme_bw() +
+  theme(legend.position = 'none', text = element_text(face='bold'))
+
+all_categories_si_nbinom = maps_si_z_irr_all_categories_days %>%
+  dplyr::filter(! name %in% c('second_nssi', 'third_nssi', 'art')) %>%
+  ggplot(data =., aes(x = label, y = estimate, color = panel)) +
+  geom_hline(yintercept = 1, lty = 2) +
+  geom_point(size = 2) + 
+  geom_text(aes(label = sig_star, y = 0.1), size = 5, vjust = 0.3) +
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0, lwd = 1) +
+  facet_grid(rows = vars(panel), scales = 'free_y') + 
+  coord_flip() +
+  scale_y_log10() +
+  labs(y = 'Incident Rate Ratio\nAssociation with Baseline SI', x = NULL) +
+  theme_bw() +
+  theme(legend.position = 'none', text = element_text(face='bold'))
+
+maps_all_categories_stats_nbinom_plt = cowplot::plot_grid(all_categories_stb_nbinom, all_categories_si_nbinom,
+                   labels = c('A', 'B'))
+
+cowplot::save_plot(maps_all_categories_stats_nbinom_plt, 
+                   base_height = 9, base_width = 9,
+                   file = '../figures/supplemental/rev1_added/labels_stb_plot_all_categories_nbinom.png')
+
+
+
+maps_stb_irr_all_categories_days %>% dplyr::select(name, estimate, conf.low, conf.high) %>% write.csv('../model_outputs_step2/maps_stb_history_irr_all_categories_nbinom.csv', row.names=FALSE)
+
+
+maps_si_z_irr_all_categories_days %>% dplyr::select(name, estimate, conf.low, conf.high) %>% write.csv('../model_outputs_step2/maps_si_irr_all_categories_nbinom.csv', row.names=FALSE)
 ```
 
 
@@ -384,7 +549,6 @@ gc()
 
 
 ```{r}
-coding_labels = read.csv('../data_stage2/coding_labels.csv')
 
 maps_si_z_or_all_categories = left_join(maps_si_z_or_all_categories, coding_labels, by = 'name')
 maps_stb_or_all_categories = left_join(maps_stb_or_all_categories, coding_labels, by = 'name')
@@ -409,6 +573,7 @@ maps_stb_or_all_categories = maps_stb_or_all_categories %>% mutate(
 
 
 save(maps_si_z_or_all_categories, maps_stb_or_all_categories, file = '../model_outputs_step2/maps_coded_models_allcategories.rda')
+
 ```
 
 # Make OR Plots of human codings as a function of STB history / baseline SI
@@ -444,34 +609,38 @@ all_categories_stb = maps_stb_or_all_categories %>%
   geom_hline(yintercept = 1, lty = 2) +
   geom_point(size = 2) + 
   geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0, lwd = 1) +
-  geom_text(aes(label = sig_star, y = 0.05), size = 7, vjust = 0.3) +
+  geom_text(aes(label = sig_star, y = 0.05), size = 5, vjust = 0.3) +
   facet_grid(rows = vars(panel), scales = 'free_y') + 
   coord_flip() +
   scale_y_log10() +
-  labs(y = 'Lifetime STB > No STB History\nOdds Ratio', x = NULL) +
+  labs(y = 'Odds Ratio: Lifetime STB > No STB History', x = NULL) +
   theme_bw() +
-  theme(legend.position = 'none')
+  theme(legend.position = 'none', text = element_text(face='bold'))
 
 all_categories_si = maps_si_z_or_all_categories %>%
   dplyr::filter(! name %in% c('second_nssi', 'third_nssi', 'art')) %>%
   ggplot(data =., aes(x = label, y = estimate, color = panel)) +
   geom_hline(yintercept = 1, lty = 2) +
   geom_point(size = 2) + 
-  geom_text(aes(label = sig_star, y = 0.1), size = 7, vjust = 0.3) +
+  geom_text(aes(label = sig_star, y = 0.1), size = 5, vjust = 0.3) +
   geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0, lwd = 1) +
   facet_grid(rows = vars(panel), scales = 'free_y') + 
   coord_flip() +
   scale_y_log10() +
-  labs(y = 'Association with Baseline Suicidal Ideation\nOdds Ratio', x = NULL) +
+  labs(y = 'Odds Ratio: Association with Baseline SI', x = NULL) +
   theme_bw() +
-  theme(legend.position = 'none')
+  theme(legend.position = 'none', text = element_text(face='bold'))
 
 maps_all_categories_stats_plt = cowplot::plot_grid(all_categories_stb, all_categories_si,
-                   labels = c('A', 'B'))
+                   labels = c('B', 'C'))
 
 cowplot::save_plot(maps_all_categories_stats_plt, 
                    base_height = 9, base_width = 9,
                    file = '../figures/supplemental/labels_stb_plot_all_categories.png')
+
+cowplot::save_plot(maps_all_categories_stats_plt, 
+                   base_height = 6, base_width = 9,
+                   file = '../figures/main//labels_stb_plot_all_categories_short.png')
 
 
 maps_stb_or_all_categories %>% dplyr::select(name, estimate, conf.low, conf.high) %>% write.csv('../model_outputs_step2/maps_stb_history_or_all_categories.csv', row.names=FALSE)

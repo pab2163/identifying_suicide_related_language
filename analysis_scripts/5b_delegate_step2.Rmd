@@ -124,8 +124,7 @@ for (id in stage2_log$id){
   
   id_coded = as.numeric(stage2_log$id_coded[stage2_log$id==id])
   uncoded$id_coded = id_coded
-  outpath = paste0('/Volumes/AUERBACHLAB/columbia/MAPS_Language/data/manual_coding/suicide_language/step_two_coding/uncoded_csv/',
-                   id_coded, '_flagged.csv')
+  outpath = paste0('/Volumes/AUERBACHLAB/columbia/MAPS_Language/data/manual_coding/suicide_language/step_two_coding/uncoded_csv/',id_coded, '_flagged.csv')
   
   # only write the file if non-existant (avoid overwriting)
   if (!file.exists(outpath)){

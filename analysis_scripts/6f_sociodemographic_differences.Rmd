@@ -1,0 +1,362 @@
+---
+title: "Looking at sociodemographic differences in lexicon flagging (above and beyond STB history)"
+author: "Paul Alexander Bloom"
+date: "2025-05-13"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(purrr)
+library(glmmTMB)
+library(emmeans)
+library(lubridate)
+library(ggplot2)
+library(ggtext)
+
+maps_predict_colors = c('darkred', '#00BFC4')
+```
+
+# Load both datasets first to track inclusion numbers for analyses
+
+```{r}
+maps_selfreport = read_csv('/Volumes/AUERBACHLAB/Columbia/MAPS_Data/Analysis/Wrangling/Self_Report/data/selfreport_07.11.2024.csv') %>% 
+  dplyr::select(ID, age, GROUP, Control, SSI19_i, 'SITE', 'sex', 'race', 'age', 'hispanic', 'heterosexual', 'cisgender', 'iPhone', 'cishet') %>%
+  mutate(sexM=ifelse(sex=='M', 1, 0),
+         study = 'maps',
+         lifetime_stb = ifelse(Control == 0, 1, 0))
+
+
+# load demographic data (df)
+load('/Volumes/AUERBACHLAB/Columbia/SP_Data/Analysis/Wrangling/Self_Report/predict_demo_01.05.26.Rda')
+
+
+predict_demo = df %>%
+  dplyr::select(., 
+                ID, sex, orientation, cishet, age, 
+                group, site, race, hispanic, contains('cssrs'), contains('ssi')) %>%
+  mutate(study = 'predict') %>%
+  mutate(lifetime_stb = ifelse(
+    cssrsLifetimeMostSevere > 2 | cssrsLifetimeAttempt ==1 |
+    cssrsPast2moMostSevere > 2, 1, 0),
+        lifetime_stb = ifelse(
+     is.na(lifetime_stb) & SSI21_total_i == 0, 0, lifetime_stb
+    ),
+    stb_group = case_when(
+      lifetime_stb ==1 ~ 'Lifetime STB',
+      lifetime_stb ==0 & (group=='MDD' | group=='remMDD') ~ 'Lifetime MDD',
+      lifetime_stb ==0 & group=='HC' ~ 'HC',
+    )
+  ) %>%
+  dplyr::select(-contains('cssrs'), -contains('ssi'))
+
+
+predict_demo= mutate(predict_demo, race=case_when(race==1 ~ "AI_AN", # American Indian/Alaska Native
+                                       race==2 ~ "Asian", 
+                                       race==3 ~ "NH_PI", # Native Hawaiin or Pacific Islander
+                                       race==4 ~ "Black", 
+                                       race==5 ~ "White", 
+                                       race==6 ~ "Multiracial",
+                                       race==99 ~ "Unknown_NR"),
+                     sexM=ifelse(sex==1, 1, 0),
+                     site = ifelse(site==1, 'NY', 'Chicago'))
+
+
+
+
+
+predict = read_csv('../data_stage2/predict_flagged_vs_maps_final_2025-08-11.csv')
+maps = read_csv('../data_stage2/maps_flagged_vs_predict_final_2025-07-28.csv')
+
+
+# Code lexicon flagging
+maps = mutate(maps, flag_bin =
+                   ifelse(suicide_lexicon_custom_token == 1 |
+                            celeb_historical_suicide_token ==1 |
+                            suicide_lexicon_custom_pairs ==1, 1, 0))
+# Make sure no duplicates
+maps = maps %>%
+  distinct(filepath, corrected_message, tm_message_start, tm_message_end, id_app, .keep_all = TRUE)
+
+maps = dplyr::select(maps,
+                            -contains('suicide'),
+                            -cat_tz,
+                            -contains('emoji'))
+
+gc()
+
+# Code IDs from filepaths
+maps_unique_id = data.frame(filepath=unique(maps$filepath))
+maps_unique_id = mutate(maps_unique_id, ID = str_extract(filepath, "(?<=KeyInput/)[^/]+"))
+
+maps = left_join(maps, maps_unique_id, by = 'filepath')
+maps = maps %>% dplyr::select(-filepath)
+
+gc()
+
+### Make sure not to include any excluded MAPS participants
+maps_inclusion = read_csv('/Volumes/AUERBACHLAB/Columbia/MAPS_Data/Analysis/ID_FINAL/id_list_compiled_2026-02-10.csv')
+
+maps_include_ids = maps_inclusion %>%
+  dplyr::filter(!is.na(study_id), !grepl('ineligible', notes_main_idlist), !grepl('not eligible', notes_main_idlist))
+
+removed_ids = dplyr::filter(maps, !ID %in% maps_include_ids$study_id)
+
+maps = dplyr::filter(maps, ID %in% maps_include_ids$study_id)
+
+maps = left_join(maps, maps_selfreport %>% mutate(ID = as.character(ID)), by = 'ID')
+
+
+predict = mutate(predict, flag_bin =
+                   ifelse(suicide_lexicon_custom_token == 1 |
+                            celeb_historical_suicide_token ==1 |
+                            suicide_lexicon_custom_pairs ==1, 1, 0))
+
+predict = predict %>%
+  distinct(corrected_message, tm_message_start, tm_message_end, id_app, filepath, .keep_all = TRUE)
+
+
+# what proportion of predict entries were flagged?
+predict_n = nrow(predict)
+sum_predict_flagged = sum(predict$flag_bin)
+pct_predict_flaggged = 100 *sum(predict$flag_bin) / nrow(predict)
+
+
+predict = dplyr::select(predict,
+                            -contains('suicide'),
+                            -cat_tz,
+                            -contains('emoji'))
+
+# get PREDICT IDs from filepaths
+predict_unique_id = data.frame(filepath=unique(predict$filepath))
+predict_unique_id = mutate(predict_unique_id, ID = str_extract(filepath, "(?<=PREDICT/)[^/]+"))
+
+predict = left_join(predict, predict_unique_id, by = 'filepath')
+predict = left_join(predict, predict_demo, by = 'ID')
+```
+
+
+# MAPS Data Cleaning / Prep for Models
+
+
+```{r}
+# filter out participants with under 1000 entries
+maps = maps %>%
+  group_by(ID)%>%
+  mutate(total_message = n()) %>%
+  ungroup()
+
+predict = predict %>%
+  group_by(ID)%>%
+  mutate(total_message = n()) %>%
+  ungroup()
+
+maps = dplyr::filter(maps, total_message >= 1000)
+predict = dplyr::filter(predict, total_message >= 1000)
+```
+
+# Join all together
+
+```{r}
+maps_forjoin= dplyr::select(maps, ID, flag_bin, sexM, cishet, age, site=SITE, race, hispanic, study, lifetime_stb)
+
+maps_forjoin = mutate(maps_forjoin, ID = paste0(ID, '_maps'))
+predict_forjoin= dplyr::select(predict, ID, flag_bin, sexM, cishet, age, site, race, hispanic, study, lifetime_stb)
+
+combined = rbind(maps_forjoin, predict_forjoin)
+
+
+rm(maps_forjoin, predict_forjoin)
+gc()
+```
+
+# Sex Assigned at Birth
+```{r}
+
+m_sex <- glmmTMB(
+  flag_bin ~ sexM + site + lifetime_stb + (1 | ID),
+  family = binomial(link = "logit"),
+  data = combined
+)
+
+broom.mixed::tidy(m_sex, conf.int=TRUE, exponentiate=TRUE)
+
+
+emmeans(m_sex, ~sexM, type = "response") %>%
+  pairs() %>%
+  confint()
+
+emm_sex = emmeans(m_sex, ~sexM, type = "response") %>%
+  as.data.frame() %>%
+  mutate(sex = ifelse(sexM==1, 'Male\n', 'Female\n'))
+
+
+sex_plt = emm_sex %>%
+  ggplot(data = ., aes(x = sex, y = prob*1000)) +
+  geom_point() +
+  geom_errorbar(aes(ymin = asymp.LCL*1000, ymax = asymp.UCL*1000), width = 0.1) +
+  theme_bw() +
+  labs(x = 'Sex Assigned at Birth', y = 'Suicidal Language Frequency\nPer 1000 Entries',
+       title = '')
+```
+
+
+# Race
+```{r}
+table(combined$race)
+combined = mutate(combined, race_for_modeling = case_when(
+  race %in% c('White', 'Black', 'Asian', 'Multiracial', 'Unknown_NR') ~ race,
+  TRUE ~ NA_character_
+))
+
+table(combined$race_for_modeling)
+
+m_race <- glmmTMB(
+  flag_bin ~ race_for_modeling + site + lifetime_stb +  (1 | ID),
+  family = binomial(link = "logit"),
+  data = combined
+)
+
+summary(m_race)
+
+emmeans(m_race, ~race_for_modeling, type = "response") %>%
+  pairs(adjust='none', reverse =TRUE) %>%
+  confint()
+
+race_emmeans = emmeans(m_race, ~race_for_modeling, type = "response") %>%
+  as.data.frame() 
+
+race_emmeans = mutate(race_emmeans, 
+                      race= as.character(race_for_modeling),
+                      race = ifelse(race=='Unknown_NR', ' Unknown/\nNot Reported', race))
+
+
+race_plt = race_emmeans %>%
+  ggplot(data = ., aes(x = race, y = prob*1000)) +
+  geom_point() +
+  geom_errorbar(aes(ymin = asymp.LCL*1000, ymax = asymp.UCL*1000), width = 0.1) +
+  theme_bw() +
+  labs(x = 'Race', y = 'Suicidal Language Frequency\nPer 1000 Entries',
+       title = '')
+  
+  
+
+```
+
+# Hispanic Ethnicity
+
+
+```{r}
+m_hispanic <- glmmTMB(
+  flag_bin ~ hispanic + site + lifetime_stb +  (1 | ID),
+  family = binomial(link = "logit"),
+  data = combined
+)
+
+summary(m_hispanic)
+
+emmeans(m_hispanic, ~hispanic, type = "response") %>%
+  pairs(reverse=TRUE) %>%
+  confint()
+
+emm_hispanic = emmeans(m_hispanic, ~hispanic, type = "response") %>%
+  as.data.frame()
+
+emm_hispanic = emm_hispanic %>%
+  mutate(hispanic = ifelse(hispanic==1, 'Hispanic', 'Not Hispanic'))
+
+hispanic_plt = emm_hispanic %>%
+  ggplot(data = ., aes(x = hispanic, y = prob*1000)) +
+  geom_point() +
+  geom_errorbar(aes(ymin = asymp.LCL*1000, ymax = asymp.UCL*1000), width = 0.1) +
+  theme_bw() +
+  labs(x = 'Hispanic Ethnicity', y = 'Suicidal Language Frequency\nPer 1000 Entries',
+       title = '')
+
+```
+
+# Sexual and Gender Minority Youth
+
+```{r}
+m_sgm <- glmmTMB(
+  flag_bin ~ cishet + site + lifetime_stb +  (1 | ID),
+  family = binomial(link = "logit"),
+  data = combined
+)
+
+with_sgm_status = combined %>% dplyr::filter(!is.na(cishet)) %>%
+  group_by(ID, cishet) %>%
+  count() %>%
+  group_by(cishet) %>%
+  count()
+
+summary(m_sgm)
+
+emmeans(m_sgm, ~cishet, type = 'response') %>%
+  pairs() %>%
+  confint()
+
+
+
+emm_sgm = emmeans(m_sgm, ~cishet, type = 'response') %>%
+  as.data.frame() %>%
+  mutate(sgm = ifelse(cishet==1, 'Cisgender &\nHeterosexual', 'Sexual or Gender\nMinority'))
+
+sgm_plt = emm_sgm %>%
+  ggplot(data = ., aes(x = sgm, y = prob*1000)) +
+  geom_point() +
+  geom_errorbar(aes(ymin = asymp.LCL*1000, ymax = asymp.UCL*1000), width = 0.1) +
+  theme_bw() +
+  labs(x = 'Sexual or Gender Minority Status', y = 'Suicidal Language Frequency\nPer 1000 Entries',
+       title = '')
+
+```
+
+# Age
+
+```{r}
+m_age <- glmmTMB(
+  flag_bin ~ age + site + lifetime_stb +  (1 | ID),
+  family = binomial(link = "logit"),
+  data = combined
+)
+
+summary(m_age)
+
+emm_age = emmeans(m_age, ~age, type = 'response', at = list(age = c(13:18))) %>%
+  as.data.frame()
+
+
+emmeans(m_age, ~age, type = 'response', at = list(age = c(14:15))) %>%
+  pairs(reverse=TRUE) %>%
+  confint()
+
+
+age_plt = emm_age %>%
+  ggplot(data = ., aes(x = age, y = prob*1000)) +
+  geom_line(lwd = 1) +
+  geom_ribbon(aes(ymin = asymp.LCL*1000, ymax = asymp.UCL*1000), alpha = 0.3) +
+  theme_bw() +
+  labs(x = 'Age (Years)', y = 'Suicidal Language Frequency\nPer 1000 Entries',
+       title = '') 
+
+
+save(m_sex, m_hispanic, m_race, m_age, m_sgm, file = '../model_outputs_step2/flagged_demographic_models.rda')
+
+```
+
+# Combined plot 
+
+```{r}
+sociodem_plt = cowplot::plot_grid(sex_plt, sgm_plt, race_plt, hispanic_plt, age_plt,
+                   labels = c('A', 'B', 'C', 'D', 'E'),
+                   nrow = 3,
+                   align = 'v', axis = 'bt')
+
+cowplot::save_plot(sociodem_plt, file = '../figures/supplemental/rev1_added/sociodem_lexicon_flag_rates.png',
+                   base_width = 7, base_height = 8.5)
+```

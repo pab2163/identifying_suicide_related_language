@@ -24,9 +24,31 @@ library(RColorBrewer)
 ```{r}
 load('../data_stage2/maps_full_codings_spellchecked.rda')
 
+```
 
+
+### Make sure not to include any excluded MAPS participants
+```{r}
+maps_inclusion = read_csv('/Volumes/AUERBACHLAB/Columbia/MAPS_Data/Analysis/ID_FINAL/id_list_compiled_2026-02-10.csv')
+
+maps_include_ids = maps_inclusion %>%
+  dplyr::filter(!is.na(study_id), !grepl('ineligible', notes_main_idlist), !grepl('not eligible', notes_main_idlist))
+
+removed_ids = dplyr::filter(final_spellcheck_codings, !id %in% maps_include_ids$study_id)
+
+final_spellcheck_codings = dplyr::filter(final_spellcheck_codings, id %in% maps_include_ids$study_id)
+```
+
+```{r}
 total_flagged = final_spellcheck_codings %>%
   dplyr::filter(flag_final_no_emojis ==1) %>% nrow()
+
+
+flagged_df = final_spellcheck_codings %>%
+  dplyr::filter(flag_final_no_emojis ==1) %>%
+  dplyr::select(-`...1`, -id_coded, -filepath)
+
+write.csv(flagged_df, file = '../data_stage2/maps_lexicon_flagged.csv', row.names=FALSE)
 
 
 # To get Precision
@@ -156,6 +178,22 @@ ggsave(language_type, file = '../figures/in_progress/prelim_language_type.png',
 
 table(true_positives$timing)
 
+language_type_shorter = ggplot(cat_emmeans, aes(y = reorder_within(name, by = prob, within = panel), x = prob)) +
+  geom_point(data = cat_emmeans,  aes(x = prob, y = reorder_within(name, by = prob, within = panel), color = panel)) +
+  geom_errorbarh(data = cat_emmeans, 
+                  aes(y = reorder_within(name, by = prob, within = panel), x = prob, xmin = asymp.LCL, xmax = asymp.UCL, color = panel)) +
+  facet_grid(rows = vars(panel), scales = 'free_y', drop = TRUE, switch = 'both') +
+  theme_bw() +
+  labs(title = '',
+       x = 'Proportion of Suicide-Related Entries',
+       y = NULL) +
+  theme(legend.position='none', text = element_text(face = 'bold')) +
+   scale_y_reordered()
+
+ggsave(language_type_shorter, file = '../figures/supplemental/language_type_descriptive.png',
+       height = 5, width = 6)
+
+
 ```
 
 # Current and first-person
@@ -237,6 +275,19 @@ emmean_currfirst = emmeans::emmeans(model_currfirst, specs = ~1, type = 'respons
 
 summary(model_currfirst)
 
+
+current_first_prop = true_positives %>%
+  group_by(id) %>%
+  summarise(n=n(), 
+            prop_first = sum(current_first_person=='Yes')/n(),
+            prop_notfirst = 1 - prop_first) %>%
+  pivot_longer(contains('prop'),
+               values_to = 'prop',
+               names_to = 'current_first_person') %>%
+  mutate(id = as.character(id),
+         current_first_person = ifelse(current_first_person == 'prop_first', 'Yes', 'No')) %>%
+  mutate(label = 'Individual Participants\n') 
+
 currfirst_v2 = ggplot(emmean_currfirst, aes(x = prob)) +
   theme_bw() +
   geom_histogram(data = current_first_prop %>% dplyr::filter(current_first_person=='Yes'),
@@ -255,7 +306,10 @@ content_grid = cowplot::plot_grid(language_type, currfirst_v2,
                    rel_heights = c(2,1),
                    hjust = 0)
 
-cowplot::save_plot(content_grid, file = '../figures/main/human_labels.png', 
+cowplot::save_plot(content_grid, file = '../figures/main/rev1/human_labels.png', 
+                   base_width = 6.8, base_height = 10)
+
+cowplot::save_plot(content_grid, file = '../figures/main/rev1/human_labels.pdf', 
                    base_width = 6.8, base_height = 10)
 
 ```
