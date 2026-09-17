@@ -1,6 +1,6 @@
 # Identifying Suicide-Related Language in Smartphone Keyboard Entries Among High-Risk Adolescents
 
-Code for analyses for Bloom & Treves et. al., 2025 ([Preprint Link](https://osf.io/preprints/psyarxiv/gfa7h_v1))
+Code for analyses for Bloom & Treves et. al., 2026 ([Paper Link](https://www.nature.com/articles/s41746-026-02921-x))
 
 
 
