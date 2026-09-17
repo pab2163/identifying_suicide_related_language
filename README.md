@@ -73,3 +73,6 @@ More flexible code for using the lexicon is available at: https://github.com/pab
 ## Lower-Level Keyboard Input Preprocessing Code:
 
 Code & matrials for keyboard input preprocessing can be found in a separate github repository [here.](https://github.com/pab2163/auerbach_nlp)
+
+## Citation
+Bloom, P.A., Treves, I.N., Pagliaccio, D. et al. Identifying suicide-related language in smartphone keyboard entries among high-risk adolescents. npj Digit. Med. (2026). https://doi.org/10.1038/s41746-026-02921-x
